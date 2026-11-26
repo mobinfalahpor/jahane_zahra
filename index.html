@@ -24,17 +24,18 @@
         var redirect = sessionStorage.getItem('olu_redirect');
         if (redirect) {
           sessionStorage.removeItem('olu_redirect');
-          history.replaceState(null, '', redirect);
+          try {
+            var target = new URL(redirect, location.origin);
+            if (target.search || target.hash) {
+              history.replaceState(null, '', location.pathname + target.search + target.hash);
+            }
+          } catch (e) {}
         }
       })();
     </script>
-    <script type="module" crossorigin src="/jahane_zahra/assets/entry-Br_QEXnh.js"></script>
-    <link rel="modulepreload" crossorigin href="/jahane_zahra/assets/rolldown-runtime-DQp2zzRu.js">
-    <link rel="modulepreload" crossorigin href="/jahane_zahra/assets/r3f-core-XgHUAlSk.js">
-    <link rel="modulepreload" crossorigin href="/jahane_zahra/assets/three-core-BhU-cSAG.js">
-    <link rel="stylesheet" crossorigin href="/jahane_zahra/assets/entry-ClLkWUJ4.css">
   </head>
   <body class="bg-[#17172F] text-[#F1DCCB] antialiased selection:bg-[#D9A9C5]/30 selection:text-[#F1DCCB] overflow-hidden">
     <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

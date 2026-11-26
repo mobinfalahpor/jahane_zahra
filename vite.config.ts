@@ -76,45 +76,12 @@ function museumManifestPlugin(): Plugin {
   };
 }
 
-function devEntryHtmlPlugin(): Plugin {
-  let rootDir = __dirname;
-  return {
-    name: 'dev-entry-html',
-    apply: 'serve',
-    configResolved(config) {
-      rootDir = config.root;
-    },
-    configureServer(server) {
-      server.middlewares.use(async (req, res, next) => {
-        const rawUrl = req.url || '/';
-        const pathname = rawUrl.split('?')[0];
-        if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
-          try {
-            const entryPath = path.resolve(rootDir, 'entry.html');
-            if (fs.existsSync(entryPath)) {
-              const rawHtml = fs.readFileSync(entryPath, 'utf8');
-              const transformed = await server.transformIndexHtml(rawUrl, rawHtml);
-              res.statusCode = 200;
-              res.setHeader('Content-Type', 'text/html; charset=utf-8');
-              res.end(transformed);
-              return;
-            }
-          } catch (err) {
-            return next(err as Error);
-          }
-        }
-        next();
-      });
-    },
-  };
-}
-
-function githubPagesOutputPlugin(): Plugin {
+function copyUnbundledSrcAssetsPlugin(): Plugin {
   let rootDir = __dirname;
   let outDir = path.resolve(__dirname, 'dist');
 
   return {
-    name: 'github-pages-output',
+    name: 'copy-unbundled-src-assets',
     apply: 'build',
     configResolved(config) {
       rootDir = config.root;
@@ -124,39 +91,10 @@ function githubPagesOutputPlugin(): Plugin {
       if (error || !fs.existsSync(outDir)) {
         return;
       }
-
-      const builtEntry = path.resolve(outDir, 'entry.html');
-      const distIndex = path.resolve(outDir, 'index.html');
-      if (fs.existsSync(builtEntry)) {
-        fs.copyFileSync(builtEntry, distIndex);
-        fs.unlinkSync(builtEntry);
-      }
-
       const srcAssets = path.resolve(rootDir, 'src/assets');
       const distSrcAssets = path.resolve(outDir, 'src/assets');
       if (fs.existsSync(srcAssets)) {
         fs.cpSync(srcAssets, distSrcAssets, {recursive: true, force: true});
-      }
-
-      if (outDir === path.resolve(rootDir, 'dist')) {
-        const filesToMirror = ['index.html', '404.html', '.nojekyll'];
-        for (const fileName of filesToMirror) {
-          const fromFile = path.resolve(outDir, fileName);
-          const toFile = path.resolve(rootDir, fileName);
-          if (fs.existsSync(fromFile)) {
-            fs.copyFileSync(fromFile, toFile);
-          }
-        }
-
-        const dirsToMirror = ['assets', 'audio', 'museum'];
-        for (const dirName of dirsToMirror) {
-          const fromDir = path.resolve(outDir, dirName);
-          const toDir = path.resolve(rootDir, dirName);
-          if (fs.existsSync(fromDir)) {
-            fs.rmSync(toDir, {recursive: true, force: true});
-            fs.cpSync(fromDir, toDir, {recursive: true, force: true});
-          }
-        }
       }
     },
   };
@@ -169,12 +107,10 @@ export default defineConfig(({command}) => {
       react(),
       tailwindcss(),
       museumManifestPlugin(),
-      devEntryHtmlPlugin(),
-      githubPagesOutputPlugin(),
+      copyUnbundledSrcAssetsPlugin(),
     ],
     build: {
       rollupOptions: {
-        input: path.resolve(__dirname, 'entry.html'),
         output: {
           manualChunks(id) {
             if (id.includes('node_modules/three')) return 'three-core';
@@ -189,18 +125,9 @@ export default defineConfig(({command}) => {
       },
     },
     server: {
+      allowedHosts: true,
       hmr: process.env.DISABLE_HMR !== 'true',
-      watch:
-        process.env.DISABLE_HMR === 'true'
-          ? null
-          : {
-              ignored: [
-                path.resolve(__dirname, 'dist'),
-                path.resolve(__dirname, 'assets'),
-                path.resolve(__dirname, 'audio'),
-                path.resolve(__dirname, 'museum'),
-              ],
-            },
+      watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },
   };
 });
