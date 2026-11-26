@@ -728,6 +728,7 @@ function IslandWorldContent({ onSelectWorld }: { onSelectWorld: (id: WorldId) =>
 export const FloatingIslandScene: React.FC = () => {
   const setActiveWorld = useUniverseStore((s) => s.setActiveWorld);
   const timeOfDay = useUniverseStore((s) => s.environment.timeOfDay);
+  const [dedicationOpen, setDedicationOpen] = useState(false);
 
   const bgColor =
     timeOfDay === 'day' ? '#4a5687' : timeOfDay === 'night' ? '#0e0e22' : '#17172F';
@@ -738,10 +739,28 @@ export const FloatingIslandScene: React.FC = () => {
         <IslandWorldContent onSelectWorld={setActiveWorld} />
       </SceneCanvas>
 
-      {/* Subtle bottom hint for desktop/mobile */}
-      <div className="pointer-events-none absolute bottom-4 inset-x-0 flex justify-center px-4">
-        <div className="px-4 py-2 rounded-2xl bg-[#17172F]/85 border border-[#7771A8]/35 text-xs sm:text-sm text-[#F1DCCB] text-center">
-          روی هر ساختمان کلیک کن یا از نقشه بالا دنیاها را انتخاب کن
+      {/* Subtle central-island dedication plaque & navigation hint */}
+      <div className="pointer-events-none absolute bottom-4 inset-x-0 z-20 flex flex-col items-center gap-2 px-4">
+        {dedicationOpen && (
+          <div className="pointer-events-auto max-w-lg rounded-2xl bg-[#17172F]/92 border border-[#D6B875]/45 px-4 py-3 text-center shadow-2xl">
+            <div className="text-xs font-bold text-[#D6B875] mb-1">یادبود مبین و زهرا</div>
+            <p className="text-xs sm:text-sm text-[#F1DCCB] leading-relaxed">
+              این جهان در دومین ماهگرد رابطه‌ی مبین و زهرا و در ششمین ماه آشناییشان ساخته شده است.
+            </p>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <button
+            type="button"
+            onClick={() => setDedicationOpen((v) => !v)}
+            className="pointer-events-auto px-3.5 py-2 rounded-2xl bg-[#17172F]/88 border border-[#D6B875]/45 text-xs sm:text-sm text-[#D6B875] font-medium hover:bg-[#232347] transition-colors cursor-pointer"
+          >
+            یادبود مبین و زهرا
+          </button>
+          <div className="px-4 py-2 rounded-2xl bg-[#17172F]/85 border border-[#7771A8]/35 text-xs sm:text-sm text-[#F1DCCB] text-center">
+            روی هر ساختمان کلیک کن یا از نقشه بالا دنیاها را انتخاب کن
+          </div>
         </div>
       </div>
     </div>

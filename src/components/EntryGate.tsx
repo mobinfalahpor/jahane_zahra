@@ -261,12 +261,15 @@ export const EntryGate: React.FC<EntryGateProps> = ({ onSuccessEnter }) => {
               <p className="text-xs tracking-wide text-[#D6B875] mb-2 font-medium">
                 دروازه اختصاصی زهرا
               </p>
-              <h1 className="text-3xl sm:text-4xl font-extrabold text-[#F1DCCB] mb-3">
+              <h1 className="text-3xl sm:text-4xl font-extrabold text-[#F1DCCB] mb-2.5">
                 جهان کوچولوی ما
               </h1>
-              <p className="text-sm sm:text-base text-[#D9A9C5] leading-relaxed mb-7">
+              <p className="text-sm sm:text-base text-[#D9A9C5] leading-relaxed mb-4">
                 یک دنیای کوچک، فقط برای تو ساخته شده...
               </p>
+              <div className="mb-6 rounded-2xl bg-[#222244]/75 border border-[#D6B875]/30 px-3.5 py-2.5 text-xs text-[#F1DCCB]/95 leading-relaxed">
+                این جهان در دومین ماهگرد رابطه‌ی مبین و زهرا و در ششمین ماه آشناییشان ساخته شده است.
+              </div>
 
               <div className="text-right mb-5">
                 <label

@@ -856,61 +856,64 @@ export const MansionArchitecture: React.FC<MansionArchitectureProps> = ({
           />
         </mesh>
 
-        {/* North Mirrorwork & Stucco Wall (Z = -16.15) */}
+        {/* North Mirrorwork & Stucco Wall (Z = -16.15, inner face at -15.99) */}
         <mesh position={[0, 2.35, -16.15]} receiveShadow castShadow>
           <boxGeometry args={[15.2, 4.5, 0.32]} />
           <meshStandardMaterial color={interiorWallHex} roughness={0.8} />
         </mesh>
         {/* Center Aineh-Kari (آینه‌کاری اصیل) Grand Niche */}
-        <mesh position={[0, 2.45, -15.96]}>
-          <boxGeometry args={[4.4, 3.2, 0.08]} />
+        <mesh position={[0, 2.45, -15.945]}>
+          <boxGeometry args={[4.4, 3.2, 0.06]} />
           <meshStandardMaterial
             map={ainehTex}
             metalness={0.82}
             roughness={0.14}
+            polygonOffset
+            polygonOffsetFactor={-1}
+            polygonOffsetUnits={-1}
           />
         </mesh>
         {/* Flanking Gachbori Stucco Panels */}
-        <mesh position={[-4.5, 2.45, -15.96]}>
-          <boxGeometry args={[3.4, 3.0, 0.06]} />
+        <mesh position={[-4.5, 2.45, -15.95]}>
+          <boxGeometry args={[3.4, 3.0, 0.05]} />
           <meshStandardMaterial map={gachTex} roughness={0.72} />
         </mesh>
-        <mesh position={[4.5, 2.45, -15.96]}>
-          <boxGeometry args={[3.4, 3.0, 0.06]} />
+        <mesh position={[4.5, 2.45, -15.95]}>
+          <boxGeometry args={[3.4, 3.0, 0.05]} />
           <meshStandardMaterial map={gachTex} roughness={0.72} />
         </mesh>
         {/* Walnut Wainscot Trim */}
-        <mesh position={[0, 0.65, -15.95]}>
-          <boxGeometry args={[14.8, 0.85, 0.08]} />
+        <mesh position={[0, 0.65, -15.93]}>
+          <boxGeometry args={[14.6, 0.85, 0.07]} />
           <meshStandardMaterial map={woodTex} color="#543320" roughness={0.55} />
         </mesh>
 
         {/* West & East Hall Walls with Arched Passageways to Side Wings */}
         {/* West Wall (X = -7.5) opening to Kitchen */}
-        <mesh position={[-7.5, 2.35, -14.8]} receiveShadow castShadow>
-          <boxGeometry args={[0.3, 4.5, 2.7]} />
+        <mesh position={[-7.5, 2.35, -14.72]} receiveShadow castShadow>
+          <boxGeometry args={[0.3, 4.5, 2.54]} />
           <meshStandardMaterial color={interiorWallHex} roughness={0.8} />
         </mesh>
         <mesh position={[-7.5, 2.35, -10.5]} receiveShadow castShadow>
           <boxGeometry args={[0.3, 4.5, 1.8]} />
           <meshStandardMaterial color={interiorWallHex} roughness={0.8} />
         </mesh>
-        <mesh position={[-7.5, 3.85, -12.45]} castShadow>
-          <boxGeometry args={[0.3, 1.5, 2.1]} />
+        <mesh position={[-7.5, 3.85, -12.425]} castShadow>
+          <boxGeometry args={[0.3, 1.5, 2.05]} />
           <meshStandardMaterial map={gachTex} roughness={0.75} />
         </mesh>
 
         {/* East Wall (X = +7.5) opening to Living Room */}
-        <mesh position={[7.5, 2.35, -14.8]} receiveShadow castShadow>
-          <boxGeometry args={[0.3, 4.5, 2.7]} />
+        <mesh position={[7.5, 2.35, -14.72]} receiveShadow castShadow>
+          <boxGeometry args={[0.3, 4.5, 2.54]} />
           <meshStandardMaterial color={interiorWallHex} roughness={0.8} />
         </mesh>
         <mesh position={[7.5, 2.35, -10.5]} receiveShadow castShadow>
           <boxGeometry args={[0.3, 4.5, 1.8]} />
           <meshStandardMaterial color={interiorWallHex} roughness={0.8} />
         </mesh>
-        <mesh position={[7.5, 3.85, -12.45]} castShadow>
-          <boxGeometry args={[0.3, 1.5, 2.1]} />
+        <mesh position={[7.5, 3.85, -12.425]} castShadow>
+          <boxGeometry args={[0.3, 1.5, 2.05]} />
           <meshStandardMaterial map={gachTex} roughness={0.75} />
         </mesh>
 
@@ -922,7 +925,7 @@ export const MansionArchitecture: React.FC<MansionArchitectureProps> = ({
             </mesh>
             {/* Turquoise & Brick Pitched Persian Roof Over Main Wing */}
             <mesh position={[0, 4.95, -12.95]} castShadow>
-              <boxGeometry args={[15.6, 0.55, 7.0]} />
+              <boxGeometry args={[15.6, 0.54, 7.0]} />
               <meshStandardMaterial color="#b48a62" roughness={0.82} />
             </mesh>
             <PersianChandelier
@@ -1015,22 +1018,22 @@ export const MansionArchitecture: React.FC<MansionArchitectureProps> = ({
 
         {/* Interior Dividers inside East Wing (with open arched doorways) */}
         {/* Living <-> Library Divider (Z = -6.5) */}
-        <mesh position={[11.6, 2.15, -6.5]} receiveShadow>
-          <boxGeometry args={[3.7, 4.2, 0.24]} />
+        <mesh position={[11.51, 2.15, -6.5]} receiveShadow>
+          <boxGeometry args={[3.54, 4.2, 0.24]} />
           <meshStandardMaterial color={interiorWallHex} roughness={0.8} />
         </mesh>
-        <mesh position={[8.6, 3.65, -6.5]}>
-          <boxGeometry args={[2.3, 1.2, 0.24]} />
+        <mesh position={[8.71, 3.65, -6.5]}>
+          <boxGeometry args={[2.06, 1.2, 0.24]} />
           <meshStandardMaterial map={gachTex} roughness={0.75} />
         </mesh>
 
         {/* Library <-> Bedroom Divider (Z = +0.0) */}
-        <mesh position={[11.6, 2.15, 0.0]} receiveShadow>
-          <boxGeometry args={[3.7, 4.2, 0.24]} />
+        <mesh position={[11.51, 2.15, 0.0]} receiveShadow>
+          <boxGeometry args={[3.54, 4.2, 0.24]} />
           <meshStandardMaterial color={interiorWallHex} roughness={0.8} />
         </mesh>
-        <mesh position={[8.6, 3.65, 0.0]}>
-          <boxGeometry args={[2.3, 1.2, 0.24]} />
+        <mesh position={[8.71, 3.65, 0.0]}>
+          <boxGeometry args={[2.06, 1.2, 0.24]} />
           <meshStandardMaterial map={gachTex} roughness={0.75} />
         </mesh>
 
@@ -1111,18 +1114,18 @@ export const MansionArchitecture: React.FC<MansionArchitectureProps> = ({
         </mesh>
 
         {/* Kitchen Turquoise Tile Backsplash Accent */}
-        <mesh position={[-13.24, 1.75, -9.8]}>
+        <mesh position={[-13.23, 1.75, -9.8]}>
           <boxGeometry args={[0.06, 1.6, 5.2]} />
           <meshStandardMaterial map={mosaicTex} roughness={0.28} />
         </mesh>
 
         {/* Kitchen <-> Cat Room Interior Divider (Z = -5.5) */}
-        <mesh position={[-11.6, 2.15, -5.5]} receiveShadow>
-          <boxGeometry args={[3.7, 4.2, 0.24]} />
+        <mesh position={[-11.51, 2.15, -5.5]} receiveShadow>
+          <boxGeometry args={[3.54, 4.2, 0.24]} />
           <meshStandardMaterial color={interiorWallHex} roughness={0.8} />
         </mesh>
-        <mesh position={[-8.6, 3.65, -5.5]}>
-          <boxGeometry args={[2.3, 1.2, 0.24]} />
+        <mesh position={[-8.71, 3.65, -5.5]}>
+          <boxGeometry args={[2.06, 1.2, 0.24]} />
           <meshStandardMaterial map={gachTex} roughness={0.75} />
         </mesh>
 

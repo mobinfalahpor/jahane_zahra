@@ -132,6 +132,8 @@ export interface HomeDesignPreset {
 }
 
 export interface HomeState {
+  schemaVersion?: number;
+  updatedAt?: number;
   activeRoom: RoomType;
   wallColor: string;
   floorMaterial: FloorMaterialId;
@@ -234,6 +236,8 @@ export interface EnvironmentSettings {
 }
 
 export interface UniversePersistedState {
+  schemaVersion?: number;
+  updatedAt?: number;
   hasEntered: boolean;
   starsCurrency: number;
   cat: CatState;

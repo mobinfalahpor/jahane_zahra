@@ -6,12 +6,15 @@ import * as THREE from 'three';
 import {
   Camera,
   Check,
+  Compass,
   Copy,
   Eye,
   EyeOff,
   Flower2,
+  Footprints,
   Grid,
   Heart,
+  HelpCircle,
   Layers,
   Minus,
   Moon,
@@ -48,6 +51,7 @@ import {
   MANSION_CAMERA_PRESETS,
   MANSION_CATALOG,
   clampScaleForKind,
+  detectMansionZone,
   getCatalogMeta,
   getZoneMeta,
   isInsideCentralPool,
@@ -55,6 +59,12 @@ import {
   type CatalogCategoryId,
   type CameraPresetMeta,
 } from './mansionCatalog';
+import {
+  constrainGodCamera,
+  findSafeFirstPersonSpawn,
+  getMansionFloorHeight,
+  resolvePlayerCollision,
+} from './mansionCollision';
 import type {
   CatEmotion,
   FloorMaterialId,
@@ -64,6 +74,8 @@ import type {
   RoomType,
   SeasonType,
 } from '../../core/types';
+
+export type ExploreMode = 'god' | 'first_person';
 
 // =====================================================================
 // Mini SVG Thumbnail for Catalog Items (تصویرک اختصاصی و سبک)
@@ -128,29 +140,53 @@ const _camForward = new THREE.Vector3();
 const _camRight = new THREE.Vector3();
 const _camMove = new THREE.Vector3();
 const _worldUp = new THREE.Vector3(0, 1, 0);
+const _lookEuler = new THREE.Euler(0, 0, 0, 'YXZ');
+const _tempMat4 = new THREE.Matrix4();
+const _lookTargetVec = new THREE.Vector3();
 const _dragRaycaster = new THREE.Raycaster();
 const _dragNdc = new THREE.Vector2();
 const _dragHitPoint = new THREE.Vector3();
 const _dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
 // =====================================================================
-// Camera Smooth Preset Choreography + WASD/Arrow Navigation + Collision
+// Unified Dual-Mode Camera Rig (God Mode Orbit + First-Person Walk)
+// Only ONE controller runs at a time; smooth transitions between modes
 // =====================================================================
 function MansionCameraRig({
+  exploreMode,
+  cutawayMode,
+  reducedMotion,
+  items,
   presetRequest,
   draggingUid,
   walkInputRef,
+  activeRoom,
+  onZoneDetected,
   onClearPresetTransition,
 }: {
+  exploreMode: ExploreMode;
+  cutawayMode: boolean;
+  reducedMotion: boolean;
+  items: PlacedFurniture[];
   presetRequest: { pos: [number, number, number]; target: [number, number, number]; nonce: number } | null;
   draggingUid: string | null;
   walkInputRef: React.MutableRefObject<{ forward: number; right: number }>;
+  activeRoom: RoomType;
+  onZoneDetected: (room: RoomType) => void;
   onClearPresetTransition: () => void;
 }) {
   const controlsRef = useRef<OrbitControlsImpl>(null);
-  const { camera } = useThree();
+  const { camera, gl } = useThree();
   const keysRef = useRef<Record<string, boolean>>({});
-  const transitionRef = useRef<{
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+
+  const prevModeRef = useRef<ExploreMode>(exploreMode);
+  const lastZoneRef = useRef<RoomType>(activeRoom);
+  const headBobRef = useRef(0);
+
+  // God mode smooth transition (presets & returning from First-Person)
+  const godTransitionRef = useRef<{
     active: boolean;
     pos: THREE.Vector3;
     target: THREE.Vector3;
@@ -160,13 +196,100 @@ function MansionCameraRig({
     target: new THREE.Vector3(0, 0.9, -1.6),
   });
 
-  useEffect(() => {
-    if (!presetRequest) return;
-    transitionRef.current.active = true;
-    transitionRef.current.pos.set(...presetRequest.pos);
-    transitionRef.current.target.set(...presetRequest.target);
-  }, [presetRequest]);
+  // First-person player state (eyeHeight = floorY + 1.62)
+  const fpStateRef = useRef({
+    x: 0,
+    z: 3.6,
+    floorY: 0,
+    yaw: 0,
+    pitch: -0.05,
+    velX: 0,
+    velZ: 0,
+    entering: false,
+    spawnPos: new THREE.Vector3(0, 1.62, 3.6),
+    spawnQuat: new THREE.Quaternion(),
+  });
 
+  // Track look drag state for First-Person mode
+  const lookDragRef = useRef<{
+    active: boolean;
+    pointerId: number | null;
+    lastX: number;
+    lastY: number;
+  }>({
+    active: false,
+    pointerId: null,
+    lastX: 0,
+    lastY: 0,
+  });
+
+  useEffect(() => {
+    if (!presetRequest || exploreMode !== 'god') return;
+    godTransitionRef.current.active = true;
+    godTransitionRef.current.pos.set(...presetRequest.pos);
+    godTransitionRef.current.target.set(...presetRequest.target);
+  }, [presetRequest, exploreMode]);
+
+  // Handle seamless mode switch without remounting Canvas
+  useEffect(() => {
+    const prev = prevModeRef.current;
+    if (prev === exploreMode) return;
+    prevModeRef.current = exploreMode;
+
+    if (exploreMode === 'first_person') {
+      // Choose smart spawn inside active room (or near courtyard south walkway)
+      const zoneMeta = getZoneMeta(activeRoom);
+      const preferredX = zoneMeta.id === 'courtyard' ? 0 : (zoneMeta.minX + zoneMeta.maxX) / 2;
+      const preferredZ =
+        zoneMeta.id === 'courtyard'
+          ? 3.8
+          : zoneMeta.id === 'eyvan'
+            ? -8.0
+            : (zoneMeta.minZ + zoneMeta.maxZ) / 2;
+
+      const spawn = findSafeFirstPersonSpawn(preferredX, preferredZ, itemsRef.current);
+      const fp = fpStateRef.current;
+      fp.x = spawn.x;
+      fp.z = spawn.z;
+      fp.floorY = spawn.floorY;
+      fp.velX = 0;
+      fp.velZ = 0;
+      fp.entering = true;
+
+      // Face toward room focal center or North into the mansion when in Courtyard
+      const faceX = zoneMeta.id === 'courtyard' ? 0 : zoneMeta.cameraTarget[0];
+      const faceZ = zoneMeta.id === 'courtyard' ? -4.5 : zoneMeta.cameraTarget[2];
+      const dx = faceX - spawn.x;
+      const dz = faceZ - spawn.z;
+      fp.yaw = Math.hypot(dx, dz) > 0.25 ? Math.atan2(-dx, -dz) : 0;
+      fp.pitch = -0.04;
+
+      fp.spawnPos.set(spawn.x, spawn.floorY + 1.62, spawn.z);
+      _lookEuler.set(fp.pitch, fp.yaw, 0, 'YXZ');
+      fp.spawnQuat.setFromEuler(_lookEuler);
+      godTransitionRef.current.active = false;
+    } else {
+      // Returning from First-Person -> God Mode smoothly
+      const fp = fpStateRef.current;
+      const tgt = new THREE.Vector3(fp.x, fp.floorY + 0.95, fp.z);
+      const backX = Math.sin(fp.yaw) * 4.2;
+      const backZ = Math.cos(fp.yaw) * 4.2;
+      const nextCam = new THREE.Vector3(
+        THREE.MathUtils.clamp(fp.x + backX, -14.5, 14.5),
+        Math.max(fp.floorY + 2.55, 2.7),
+        THREE.MathUtils.clamp(fp.z + backZ, -15.2, 14.5)
+      );
+      constrainGodCamera(nextCam, tgt, cutawayMode, 0.42);
+      godTransitionRef.current.active = true;
+      godTransitionRef.current.pos.copy(nextCam);
+      godTransitionRef.current.target.copy(tgt);
+      if (controlsRef.current) {
+        controlsRef.current.target.copy(tgt);
+      }
+    }
+  }, [exploreMode, activeRoom, cutawayMode]);
+
+  // Keyboard bindings (WASD / Arrow Keys + Shift)
   useEffect(() => {
     const onDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -175,34 +298,72 @@ function MansionCameraRig({
     const onUp = (e: KeyboardEvent) => {
       keysRef.current[e.code] = false;
     };
+    const onBlur = () => {
+      keysRef.current = {};
+    };
     window.addEventListener('keydown', onDown);
     window.addEventListener('keyup', onUp);
+    window.addEventListener('blur', onBlur);
     return () => {
       window.removeEventListener('keydown', onDown);
       window.removeEventListener('keyup', onUp);
+      window.removeEventListener('blur', onBlur);
     };
   }, []);
 
-  useFrame((_, rawDelta) => {
-    const controls = controlsRef.current;
-    if (!controls) return;
-    const dt = Math.min(0.05, rawDelta);
+  // Pointer drag look in First-Person Mode (Desktop & Mobile touch)
+  useEffect(() => {
+    if (exploreMode !== 'first_person') return;
+    const dom = gl.domElement;
 
-    // Smoothly interpolate toward preset camera
-    if (transitionRef.current.active) {
-      const alpha = 1 - Math.exp(-5.2 * dt);
-      camera.position.lerp(transitionRef.current.pos, alpha);
-      controls.target.lerp(transitionRef.current.target, alpha);
-      if (
-        camera.position.distanceTo(transitionRef.current.pos) < 0.06 &&
-        controls.target.distanceTo(transitionRef.current.target) < 0.06
-      ) {
-        transitionRef.current.active = false;
-        onClearPresetTransition();
+    const onPointerDown = (e: PointerEvent) => {
+      if (draggingUid) return;
+      if (e.button !== 0 && e.pointerType === 'mouse') return;
+      lookDragRef.current = {
+        active: true,
+        pointerId: e.pointerId,
+        lastX: e.clientX,
+        lastY: e.clientY,
+      };
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      const ld = lookDragRef.current;
+      if (!ld.active || ld.pointerId !== e.pointerId || draggingUid) return;
+      const dx = e.clientX - ld.lastX;
+      const dy = e.clientY - ld.lastY;
+      ld.lastX = e.clientX;
+      ld.lastY = e.clientY;
+
+      const sensitivity = e.pointerType === 'touch' ? 0.0046 : 0.0036;
+      const fp = fpStateRef.current;
+      fp.entering = false;
+      fp.yaw -= dx * sensitivity;
+      fp.pitch = THREE.MathUtils.clamp(fp.pitch - dy * sensitivity, -1.08, 1.15);
+    };
+
+    const onPointerUp = (e: PointerEvent) => {
+      if (lookDragRef.current.pointerId === e.pointerId) {
+        lookDragRef.current.active = false;
+        lookDragRef.current.pointerId = null;
       }
-    }
+    };
 
-    // Keyboard WASD / Arrow & touch pad walking
+    dom.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
+    return () => {
+      dom.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
+      lookDragRef.current.active = false;
+    };
+  }, [exploreMode, gl, draggingUid]);
+
+  useFrame((_, rawDelta) => {
+    const dt = Math.min(0.05, rawDelta);
     const k = keysRef.current;
     let f = walkInputRef.current.forward;
     let r = walkInputRef.current.right;
@@ -211,14 +372,99 @@ function MansionCameraRig({
     if (k.KeyD || k.ArrowRight) r += 1;
     if (k.KeyA || k.ArrowLeft) r -= 1;
 
-    if ((Math.abs(f) > 0.05 || Math.abs(r) > 0.05) && !draggingUid) {
-      transitionRef.current.active = false;
+    // Normalize diagonal movement so walking diagonally isn't faster
+    const inputMag = Math.hypot(f, r);
+    if (inputMag > 1) {
+      f /= inputMag;
+      r /= inputMag;
+    }
+
+    if (exploreMode === 'first_person') {
+      const fp = fpStateRef.current;
+
+      // Initial smooth camera flight into human standing height
+      if (fp.entering) {
+        const alpha = 1 - Math.exp(-7.5 * dt);
+        camera.position.lerp(fp.spawnPos, alpha);
+        camera.quaternion.slerp(fp.spawnQuat, alpha);
+        if (camera.position.distanceTo(fp.spawnPos) < 0.04 || inputMag > 0.05) {
+          fp.entering = false;
+        }
+        return;
+      }
+
+      // Apply yaw/pitch rotation cleanly
+      _lookEuler.set(fp.pitch, fp.yaw, 0, 'YXZ');
+      camera.quaternion.setFromEuler(_lookEuler);
+
+      // Compute horizontal walk direction from player yaw
+      const speedScale = k.ShiftLeft || k.ShiftRight ? 4.3 : 2.95;
+      const sinY = Math.sin(fp.yaw);
+      const cosY = Math.cos(fp.yaw);
+      // Forward vector in Three.js (-Z when yaw=0): (-sinY, -cosY), Right vector: (cosY, -sinY)
+      const wishX = (-sinY * f + cosY * r) * speedScale;
+      const wishZ = (-cosY * f - sinY * r) * speedScale;
+
+      const accel = inputMag > 0.05 && !draggingUid ? 11 : 14;
+      const blend = 1 - Math.exp(-accel * dt);
+      fp.velX = THREE.MathUtils.lerp(fp.velX, draggingUid ? 0 : wishX, blend);
+      fp.velZ = THREE.MathUtils.lerp(fp.velZ, draggingUid ? 0 : wishZ, blend);
+
+      const moveSpeed = Math.hypot(fp.velX, fp.velZ);
+      if (moveSpeed > 0.01) {
+        const nextX = fp.x + fp.velX * dt;
+        const nextZ = fp.z + fp.velZ * dt;
+        const resolved = resolvePlayerCollision(nextX, nextZ, fp.floorY, 0.34, itemsRef.current);
+        fp.x = resolved.x;
+        fp.z = resolved.z;
+        fp.floorY = THREE.MathUtils.lerp(fp.floorY, resolved.floorY, 1 - Math.exp(-14 * dt));
+      } else {
+        const groundY = getMansionFloorHeight(fp.x, fp.z);
+        fp.floorY = THREE.MathUtils.lerp(fp.floorY, groundY, 1 - Math.exp(-10 * dt));
+      }
+
+      if (!reducedMotion && moveSpeed > 0.2) {
+        headBobRef.current += dt * (4.5 + moveSpeed * 1.4);
+      } else {
+        headBobRef.current = THREE.MathUtils.lerp(headBobRef.current, 0, 1 - Math.exp(-6 * dt));
+      }
+      const bobOffset = !reducedMotion && moveSpeed > 0.2 ? Math.sin(headBobRef.current) * 0.022 : 0;
+
+      camera.position.set(fp.x, fp.floorY + 1.62 + bobOffset, fp.z);
+
+      const currentZone = detectMansionZone(fp.x, fp.z).id;
+      if (currentZone !== lastZoneRef.current) {
+        lastZoneRef.current = currentZone;
+        onZoneDetected(currentZone);
+      }
+      return;
+    }
+
+    // ==================== GOD MODE (Orbit + Safe Collision) ====================
+    const controls = controlsRef.current;
+    if (!controls) return;
+
+    if (godTransitionRef.current.active) {
+      const alpha = 1 - Math.exp(-5.6 * dt);
+      camera.position.lerp(godTransitionRef.current.pos, alpha);
+      controls.target.lerp(godTransitionRef.current.target, alpha);
+      if (
+        camera.position.distanceTo(godTransitionRef.current.pos) < 0.06 &&
+        controls.target.distanceTo(godTransitionRef.current.target) < 0.06
+      ) {
+        godTransitionRef.current.active = false;
+        onClearPresetTransition();
+      }
+    }
+
+    if (inputMag > 0.05 && !draggingUid) {
+      godTransitionRef.current.active = false;
       camera.getWorldDirection(_camForward);
       _camForward.y = 0;
       if (_camForward.lengthSq() > 0.0001) _camForward.normalize();
       _camRight.crossVectors(_camForward, _worldUp).normalize();
 
-      const speed = 5.2 * dt;
+      const speed = 5.4 * dt;
       _camMove
         .set(0, 0, 0)
         .addScaledVector(_camForward, f * speed)
@@ -230,14 +476,24 @@ function MansionCameraRig({
       const dz = nextCamZ - camera.position.z;
       camera.position.x = nextCamX;
       camera.position.z = nextCamZ;
-      controls.target.x = THREE.MathUtils.clamp(controls.target.x + dx, -13.2, 13.2);
-      controls.target.z = THREE.MathUtils.clamp(controls.target.z + dz, -15.8, 7.5);
+      controls.target.x = THREE.MathUtils.clamp(controls.target.x + dx, -13.1, 13.1);
+      controls.target.z = THREE.MathUtils.clamp(controls.target.z + dz, -15.7, 7.5);
     }
 
-    // Clamp camera height & outer bounds so camera stays cleanly above floors & never clips under ground
-    camera.position.y = THREE.MathUtils.clamp(camera.position.y, 1.05, 28);
     controls.update();
+
+    // Enforce anti-wall & ceiling collision after OrbitControls update so camera never pierces walls
+    constrainGodCamera(camera.position, controls.target, cutawayMode, 0.36);
+
+    // Keep camera looking cleanly at target even after wall constraint pull-in
+    _lookTargetVec.copy(controls.target);
+    _tempMat4.lookAt(camera.position, _lookTargetVec, camera.up);
+    camera.quaternion.setFromRotationMatrix(_tempMat4);
   });
+
+  if (exploreMode !== 'god') {
+    return null;
+  }
 
   return (
     <OrbitControls
@@ -245,13 +501,84 @@ function MansionCameraRig({
       enabled={!draggingUid}
       enableDamping
       dampingFactor={0.07}
-      minDistance={2.2}
+      minDistance={1.8}
       maxDistance={32}
       maxPolarAngle={Math.PI * 0.48}
       onStart={() => {
-        transitionRef.current.active = false;
+        godTransitionRef.current.active = false;
       }}
     />
+  );
+}
+
+// =====================================================================
+// Mobile Virtual Circular Thumbstick for First-Person Exploration
+// =====================================================================
+function TouchWalkJoystick({
+  walkInputRef,
+}: {
+  walkInputRef: React.MutableRefObject<{ forward: number; right: number }>;
+}) {
+  const baseRef = useRef<HTMLDivElement>(null);
+  const [knobOffset, setKnobOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const activePointerRef = useRef<number | null>(null);
+  const maxRadius = 34;
+
+  const updateFromPointer = (clientX: number, clientY: number) => {
+    const el = baseRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    let dx = clientX - cx;
+    let dy = clientY - cy;
+    const dist = Math.hypot(dx, dy);
+    if (dist > maxRadius && dist > 0.001) {
+      dx = (dx / dist) * maxRadius;
+      dy = (dy / dist) * maxRadius;
+    }
+    setKnobOffset({ x: dx, y: dy });
+    walkInputRef.current.right = Number((dx / maxRadius).toFixed(2));
+    walkInputRef.current.forward = Number((-dy / maxRadius).toFixed(2));
+  };
+
+  const resetStick = () => {
+    activePointerRef.current = null;
+    setKnobOffset({ x: 0, y: 0 });
+    walkInputRef.current.forward = 0;
+    walkInputRef.current.right = 0;
+  };
+
+  return (
+    <div
+      ref={baseRef}
+      role="group"
+      aria-label="اهرم حرکت لمسی"
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        activePointerRef.current = e.pointerId;
+        (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+        updateFromPointer(e.clientX, e.clientY);
+      }}
+      onPointerMove={(e) => {
+        if (activePointerRef.current !== e.pointerId) return;
+        e.stopPropagation();
+        updateFromPointer(e.clientX, e.clientY);
+      }}
+      onPointerUp={(e) => {
+        if (activePointerRef.current !== e.pointerId) return;
+        e.stopPropagation();
+        resetStick();
+      }}
+      onPointerCancel={resetStick}
+      className="relative w-24 h-24 rounded-full bg-[#17172F]/80 border-2 border-[#d4a84f]/50 shadow-xl flex items-center justify-center touch-none select-none cursor-grab active:cursor-grabbing"
+    >
+      <div className="absolute inset-2 rounded-full border border-white/10 pointer-events-none" />
+      <div
+        className="w-10 h-10 rounded-full bg-[#d4a84f] border-2 border-[#f2e4cb] shadow-lg transition-transform duration-75 pointer-events-none"
+        style={{ transform: `translate(${knobOffset.x}px, ${knobOffset.y}px)` }}
+      />
+    </div>
   );
 }
 
@@ -501,6 +828,8 @@ export const HomeDesignerWorld: React.FC = () => {
   const interactWithCat = useUniverseStore((s) => s.interactWithCat);
   const profile = useMemo(() => getGraphicsProfile(quality, reducedMotion), [quality, reducedMotion]);
 
+  const [exploreMode, setExploreMode] = useState<ExploreMode>('god');
+  const [showControlHint, setShowControlHint] = useState(true);
   const [editMode, setEditMode] = useState(false);
   const [cutawayMode, setCutawayMode] = useState(false);
   const [selectedUid, setSelectedUid] = useState<string | null>(null);
@@ -526,6 +855,7 @@ export const HomeDesignerWorld: React.FC = () => {
   const walkInputRef = useRef({ forward: 0, right: 0 });
   const timeMode: HomeTimeMode = home.timeMode ?? 'day';
   const snapToGrid = home.snapToGrid ?? true;
+  const effectiveCutaway = exploreMode === 'first_person' ? false : cutawayMode;
 
   const showToast = useCallback((msg: string) => {
     setToastMsg(msg);
@@ -547,9 +877,35 @@ export const HomeDesignerWorld: React.FC = () => {
     [selectedItem]
   );
 
+  const handleZoneDetected = useCallback(
+    (room: RoomType) => {
+      setActiveRoom(room);
+    },
+    [setActiveRoom]
+  );
+
+  const handleSwitchExploreMode = useCallback(
+    (nextMode: ExploreMode) => {
+      if (nextMode === exploreMode) return;
+      audioEngine.playSfx('click');
+      setExploreMode(nextMode);
+      setShowControlHint(true);
+      if (nextMode === 'first_person') {
+        setDockOpen(false);
+        showToast('حالت قدم‌زدن اول‌شخص فعال شد؛ در اتاق‌ها و حیاط قدم بزنید');
+      } else {
+        showToast('حالت دید آزاد عمارت فعال شد');
+      }
+    },
+    [exploreMode, showToast]
+  );
+
   const applyCameraPreset = useCallback(
     (preset: CameraPresetMeta) => {
       audioEngine.playSfx('click');
+      if (exploreMode !== 'god') {
+        setExploreMode('god');
+      }
       setActivePresetId(preset.id);
       if (preset.zone) setActiveRoom(preset.zone);
       if (preset.cutawayRecommended !== undefined) {
@@ -561,7 +917,7 @@ export const HomeDesignerWorld: React.FC = () => {
         nonce: (prev?.nonce ?? 0) + 1,
       }));
     },
-    [setActiveRoom]
+    [exploreMode, setActiveRoom]
   );
 
   const handleToggleEditMode = () => {
@@ -689,6 +1045,8 @@ export const HomeDesignerWorld: React.FC = () => {
       <SceneCanvas
         cameraPosition={[0.6, 8.9, 13.4]}
         fov={48}
+        near={0.16}
+        far={140}
         bgColor={sceneBg}
         fogColor={fogColor}
         fogNear={26}
@@ -700,7 +1058,7 @@ export const HomeDesignerWorld: React.FC = () => {
           wallColor={home.wallColor}
           floorMaterial={home.floorMaterial}
           lightWarmth={home.lightWarmth}
-          cutawayMode={cutawayMode}
+          cutawayMode={effectiveCutaway}
         />
 
         {home.items.map((item) => (
@@ -732,20 +1090,58 @@ export const HomeDesignerWorld: React.FC = () => {
         />
 
         <MansionCameraRig
+          exploreMode={exploreMode}
+          cutawayMode={effectiveCutaway}
+          reducedMotion={profile.systemReducedMotion}
+          items={home.items}
           presetRequest={cameraRequest}
           draggingUid={draggingUid}
           walkInputRef={walkInputRef}
+          activeRoom={home.activeRoom}
+          onZoneDetected={handleZoneDetected}
           onClearPresetTransition={handleClearPresetTransition}
         />
       </SceneCanvas>
 
       {/* ============================================================= */}
-      {/* TOP BAR: Zone Camera Presets + Time of Day + Edit & Cutaway   */}
+      {/* TOP BAR: Exploration Mode + Zone Presets + Time + Edit        */}
       {/* ============================================================= */}
       <div className="fixed top-14 sm:top-16 inset-x-0 z-20 px-3 pointer-events-none flex flex-col gap-1.5 items-center">
         <div className="pointer-events-auto w-full max-w-5xl flex items-center justify-between gap-2 flex-wrap">
-          {/* Action Chips */}
+          {/* Mode Switcher & Edit Chips */}
           <div className="flex items-center gap-1.5 flex-wrap">
+            {/* Dual Exploration Mode Switcher */}
+            <div
+              role="group"
+              aria-label="حالت کاوش در عمارت"
+              className="flex items-center gap-1 bg-[#17172F]/92 border border-[#d4a84f]/45 rounded-xl p-1"
+            >
+              <button
+                type="button"
+                onClick={() => handleSwitchExploreMode('god')}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium cursor-pointer transition-all ${
+                  exploreMode === 'god'
+                    ? 'bg-[#d4a84f] text-[#17172F] font-bold shadow'
+                    : 'text-[#F1DCCB]/85 hover:bg-white/10'
+                }`}
+              >
+                <Compass className="w-3.5 h-3.5" />
+                <span>دید آزاد عمارت</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSwitchExploreMode('first_person')}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium cursor-pointer transition-all ${
+                  exploreMode === 'first_person'
+                    ? 'bg-[#257d82] text-white font-bold shadow'
+                    : 'text-[#F1DCCB]/85 hover:bg-white/10'
+                }`}
+              >
+                <Footprints className="w-3.5 h-3.5" />
+                <span>قدم‌زدن اول‌شخص</span>
+              </button>
+            </div>
+
             <button
               type="button"
               onClick={handleToggleEditMode}
@@ -759,22 +1155,24 @@ export const HomeDesignerWorld: React.FC = () => {
               <span>{editMode ? 'خروج از ویرایش' : 'چیدمان خانه'}</span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => {
-                audioEngine.playSfx('click');
-                setCutawayMode((v) => !v);
-              }}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs border transition-all cursor-pointer ${
-                cutawayMode
-                  ? 'bg-[#257d82] text-[#F1DCCB] border-[#96e3e6]/60'
-                  : 'bg-[#17172F]/90 text-[#F1DCCB] border-white/15 hover:bg-[#232346]'
-              }`}
-              title="باز کردن سقف برای چیدمان و دید کل‌نگر"
-            >
-              {cutawayMode ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-              <span>{cutawayMode ? 'نمای باز (بدون سقف)' : 'سقف کامل'}</span>
-            </button>
+            {exploreMode === 'god' && (
+              <button
+                type="button"
+                onClick={() => {
+                  audioEngine.playSfx('click');
+                  setCutawayMode((v) => !v);
+                }}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs border transition-all cursor-pointer ${
+                  cutawayMode
+                    ? 'bg-[#257d82] text-[#F1DCCB] border-[#96e3e6]/60'
+                    : 'bg-[#17172F]/90 text-[#F1DCCB] border-white/15 hover:bg-[#232346]'
+                }`}
+                title="باز کردن سقف برای چیدمان و دید کل‌نگر"
+              >
+                {cutawayMode ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+                <span>{cutawayMode ? 'نمای باز (بدون سقف)' : 'سقف کامل'}</span>
+              </button>
+            )}
           </div>
 
           {/* Day / Sunset / Night Atmosphere Switcher */}
@@ -806,33 +1204,67 @@ export const HomeDesignerWorld: React.FC = () => {
           </div>
         </div>
 
-        {/* Camera & Wing Presets Strip */}
-        <div className="pointer-events-auto w-full max-w-5xl flex items-center gap-1.5 overflow-x-auto pb-1">
-          <span className="text-[11px] text-[#d4a84f] shrink-0 flex items-center gap-1 bg-[#17172F]/85 px-2 py-1.5 rounded-xl border border-white/10">
-            <Camera className="w-3.5 h-3.5" />
-            <span>بخش‌های عمارت:</span>
-          </span>
-          {MANSION_CAMERA_PRESETS.map((preset) => (
-            <button
-              key={preset.id}
-              type="button"
-              onClick={() => applyCameraPreset(preset)}
-              className={`px-2.5 py-1.5 rounded-xl text-[11px] whitespace-nowrap shrink-0 border cursor-pointer transition-all ${
-                activePresetId === preset.id
-                  ? 'bg-[#8a1e2b] text-[#f2e4cb] border-[#d4a84f]'
-                  : 'bg-[#17172F]/85 text-[#F1DCCB] border-white/15 hover:bg-[#232346]'
-              }`}
-            >
-              {preset.label}
-            </button>
-          ))}
-        </div>
+        {/* Camera & Wing Presets Strip (in God Mode) OR Live Room Indicator (in First-Person Mode) */}
+        {exploreMode === 'god' ? (
+          <div className="pointer-events-auto w-full max-w-5xl flex items-center gap-1.5 overflow-x-auto pb-1">
+            <span className="text-[11px] text-[#d4a84f] shrink-0 flex items-center gap-1 bg-[#17172F]/85 px-2 py-1.5 rounded-xl border border-white/10">
+              <Camera className="w-3.5 h-3.5" />
+              <span>بخش‌های عمارت:</span>
+            </span>
+            {MANSION_CAMERA_PRESETS.map((preset) => (
+              <button
+                key={preset.id}
+                type="button"
+                onClick={() => applyCameraPreset(preset)}
+                className={`px-2.5 py-1.5 rounded-xl text-[11px] whitespace-nowrap shrink-0 border cursor-pointer transition-all ${
+                  activePresetId === preset.id
+                    ? 'bg-[#8a1e2b] text-[#f2e4cb] border-[#d4a84f]'
+                    : 'bg-[#17172F]/85 text-[#F1DCCB] border-white/15 hover:bg-[#232346]'
+                }`}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="pointer-events-auto w-full max-w-5xl flex flex-col gap-1.5">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2 bg-[#17172F]/88 border border-[#257d82]/60 px-3 py-1.5 rounded-xl text-xs text-[#F1DCCB]">
+                <Footprints className="w-3.5 h-3.5 text-[#9be0dc]" />
+                <span>فضای فعلی:</span>
+                <span className="font-bold text-[#d4a84f]">{getZoneMeta(home.activeRoom).label}</span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowControlHint((v) => !v)}
+                className="flex items-center gap-1 bg-[#17172F]/85 border border-white/15 px-2.5 py-1.5 rounded-xl text-[11px] text-[#F1DCCB] hover:bg-[#232346] cursor-pointer"
+              >
+                <HelpCircle className="w-3.5 h-3.5 text-[#d4a84f]" />
+                <span>{showControlHint ? 'بستن راهنما' : 'راهنمای حرکت'}</span>
+              </button>
+            </div>
+
+            {showControlHint && (
+              <div className="self-start rounded-xl bg-[#17172F]/88 border border-[#257d82]/50 px-3 py-1.5 text-[11px] text-[#F1DCCB] shadow-lg flex items-center gap-2 max-w-xl">
+                <Footprints className="w-3.5 h-3.5 text-[#9be0dc] shrink-0" />
+                <span className="leading-relaxed">
+                  برای حرکت از کلیدهای جهت‌نما یا اهرم لمسی استفاده کنید و برای نگاه کردن به اطراف، صفحه را بکشید.
+                </span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ============================================================= */}
-      {/* FLOATING STATUS BADGES (Cat Live Status + Toast Feedback)     */}
+      {/* FLOATING STATUS BADGES (Personal Plaque + Cat Status + Toast) */}
       {/* ============================================================= */}
-      <div className="fixed top-36 sm:top-38 right-3 sm:right-5 z-20 pointer-events-none flex flex-col gap-1.5 max-w-[235px]">
+      <div className="fixed top-44 sm:top-44 right-3 sm:right-5 z-20 pointer-events-none flex flex-col gap-1.5 max-w-[235px]">
+        <div className="rounded-xl bg-[#17172F]/82 border border-[#D6B875]/30 px-2.5 py-1 text-[10px] text-[#D6B875] flex items-center gap-1.5">
+          <Sparkles className="w-3 h-3 shrink-0" />
+          <span>عمارت اختصاصی مبین و زهرا</span>
+        </div>
         {catStatus && (
           <div className="rounded-xl bg-[#17172F]/88 border border-[#d4a84f]/35 px-2.5 py-1.5 shadow-lg">
             <div className="flex items-center gap-1 text-[10px] text-[#d4a84f] font-semibold">
@@ -850,51 +1282,64 @@ export const HomeDesignerWorld: React.FC = () => {
       </div>
 
       {/* ============================================================= */}
-      {/* SUBTLE WALK CONTROLS HINT / MINI MOBILE D-PAD                 */}
+      {/* PERSIAN EXPLORATION CONTROLS & MOBILE VIRTUAL THUMBSTICK      */}
       {/* ============================================================= */}
-      <div className="fixed left-3 top-38 z-20 pointer-events-auto hidden md:flex flex-col items-center gap-1 bg-[#17172F]/80 border border-white/15 rounded-xl p-1.5 text-[10px] text-[#F1DCCB]/80">
-        <span>حرکت: W A S D</span>
-        <div className="grid grid-cols-3 gap-0.5">
-          <div />
-          <button
-            type="button"
-            onPointerDown={() => (walkInputRef.current.forward = 1)}
-            onPointerUp={() => (walkInputRef.current.forward = 0)}
-            onPointerLeave={() => (walkInputRef.current.forward = 0)}
-            className="w-6 h-6 rounded bg-white/10 hover:bg-white/20 cursor-pointer"
-          >
-            ▲
-          </button>
-          <div />
-          <button
-            type="button"
-            onPointerDown={() => (walkInputRef.current.right = -1)}
-            onPointerUp={() => (walkInputRef.current.right = 0)}
-            onPointerLeave={() => (walkInputRef.current.right = 0)}
-            className="w-6 h-6 rounded bg-white/10 hover:bg-white/20 cursor-pointer"
-          >
-            ◀
-          </button>
-          <button
-            type="button"
-            onPointerDown={() => (walkInputRef.current.forward = -1)}
-            onPointerUp={() => (walkInputRef.current.forward = 0)}
-            onPointerLeave={() => (walkInputRef.current.forward = 0)}
-            className="w-6 h-6 rounded bg-white/10 hover:bg-white/20 cursor-pointer"
-          >
-            ▼
-          </button>
-          <button
-            type="button"
-            onPointerDown={() => (walkInputRef.current.right = 1)}
-            onPointerUp={() => (walkInputRef.current.right = 0)}
-            onPointerLeave={() => (walkInputRef.current.right = 0)}
-            className="w-6 h-6 rounded bg-white/10 hover:bg-white/20 cursor-pointer"
-          >
-            ▶
-          </button>
+      {exploreMode === 'first_person' ? (
+        <div className="fixed left-4 bottom-16 sm:bottom-20 z-20 pointer-events-auto flex flex-col items-center gap-1.5">
+          <TouchWalkJoystick walkInputRef={walkInputRef} />
+          <span className="text-[10px] text-[#F1DCCB]/85 bg-[#17172F]/80 px-2 py-0.5 rounded-lg border border-white/10">
+            حرکت و گشت‌وگذار
+          </span>
         </div>
-      </div>
+      ) : (
+        <div className="fixed left-3 top-38 z-20 pointer-events-auto hidden md:flex flex-col items-center gap-1 bg-[#17172F]/80 border border-white/15 rounded-xl p-1.5 text-[10px] text-[#F1DCCB]/85">
+          <span>جهت‌یاب دید آزاد</span>
+          <div className="grid grid-cols-3 gap-0.5">
+            <div />
+            <button
+              type="button"
+              aria-label="حرکت به جلو"
+              onPointerDown={() => (walkInputRef.current.forward = 1)}
+              onPointerUp={() => (walkInputRef.current.forward = 0)}
+              onPointerLeave={() => (walkInputRef.current.forward = 0)}
+              className="w-6 h-6 rounded bg-white/10 hover:bg-white/20 cursor-pointer"
+            >
+              ▲
+            </button>
+            <div />
+            <button
+              type="button"
+              aria-label="حرکت به چپ"
+              onPointerDown={() => (walkInputRef.current.right = -1)}
+              onPointerUp={() => (walkInputRef.current.right = 0)}
+              onPointerLeave={() => (walkInputRef.current.right = 0)}
+              className="w-6 h-6 rounded bg-white/10 hover:bg-white/20 cursor-pointer"
+            >
+              ◀
+            </button>
+            <button
+              type="button"
+              aria-label="حرکت به عقب"
+              onPointerDown={() => (walkInputRef.current.forward = -1)}
+              onPointerUp={() => (walkInputRef.current.forward = 0)}
+              onPointerLeave={() => (walkInputRef.current.forward = 0)}
+              className="w-6 h-6 rounded bg-white/10 hover:bg-white/20 cursor-pointer"
+            >
+              ▼
+            </button>
+            <button
+              type="button"
+              aria-label="حرکت به راست"
+              onPointerDown={() => (walkInputRef.current.right = 1)}
+              onPointerUp={() => (walkInputRef.current.right = 0)}
+              onPointerLeave={() => (walkInputRef.current.right = 0)}
+              className="w-6 h-6 rounded bg-white/10 hover:bg-white/20 cursor-pointer"
+            >
+              ▶
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ============================================================= */}
       {/* SELECTED ITEM COMPACT ACTION BAR (ویرایش دقیق شیء انتخاب‌شده) */}

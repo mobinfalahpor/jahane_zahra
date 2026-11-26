@@ -206,6 +206,11 @@ export const WorldHUD: React.FC = () => {
                   );
                 })}
               </div>
+              <div className="mt-4 rounded-2xl bg-[#202042]/90 border border-[#D6B875]/30 px-4 py-3 text-center">
+                <p className="text-xs sm:text-sm text-[#F1DCCB]/95 leading-relaxed">
+                  این جهان در دومین ماهگرد رابطه‌ی مبین و زهرا و در ششمین ماه آشناییشان ساخته شده است.
+                </p>
+              </div>
             </motion.div>
           </motion.div>
         )}
@@ -327,6 +332,12 @@ export const WorldHUD: React.FC = () => {
                   className="w-4 h-4 accent-[#D6B875]"
                 />
               </label>
+
+              <div className="rounded-2xl bg-[#202042]/85 border border-[#D6B875]/30 px-3.5 py-2.5 text-center">
+                <p className="text-xs text-[#F1DCCB]/90 leading-relaxed">
+                  این جهان در دومین ماهگرد رابطه‌ی مبین و زهرا و در ششمین ماه آشناییشان ساخته شده است.
+                </p>
+              </div>
 
               <button
                 type="button"

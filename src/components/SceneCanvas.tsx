@@ -86,6 +86,8 @@ interface SceneCanvasProps {
   children: React.ReactNode;
   cameraPosition?: [number, number, number];
   fov?: number;
+  near?: number;
+  far?: number;
   bgColor?: string;
   fogColor?: string;
   fogNear?: number;
@@ -98,6 +100,8 @@ export const SceneCanvas: React.FC<SceneCanvasProps> = ({
   children,
   cameraPosition = [0, 4, 10],
   fov = 45,
+  near = 0.1,
+  far = 180,
   bgColor = '#17172F',
   fogColor,
   fogNear = 18,
@@ -160,7 +164,7 @@ export const SceneCanvas: React.FC<SceneCanvasProps> = ({
         dpr={profile.maxDpr}
         shadows={profile.shadowsEnabled ? (profile.lodLevel === 'balanced' ? 'basic' : 'soft') : false}
         frameloop={pagePaused ? 'demand' : frameloop}
-        camera={{ position: cameraPosition, fov, near: 0.1, far: 180 }}
+        camera={{ position: cameraPosition, fov, near, far }}
         gl={{
           antialias: profile.antialias,
           powerPreference: 'high-performance',

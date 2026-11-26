@@ -1,9 +1,10 @@
 import { create } from 'zustand';
-import { loadUniverseState, saveUniverseState } from './db';
+import { loadUniverseState, saveUniverseState, saveUniverseStateSyncMirror } from './db';
 import { normalizeGraphicsQuality } from './graphicsProfile';
 import { MUSIC_TRACKS_CONFIG } from '../config/musicConfig';
 import {
   ALL_UNLOCKED_MANSION_KINDS,
+  CATALOG_BY_KIND,
   DEFAULT_MANSION_ITEMS,
   clampScaleForKind,
   getCatalogMeta,
@@ -32,6 +33,7 @@ import type {
   RoomType,
   SeasonType,
   StarColorHex,
+  SurfaceKind,
   UniversePersistedState,
   WishCategory,
   WishItem,
@@ -158,6 +160,8 @@ export const DEFAULT_UNIVERSE_STATE: UniversePersistedState = {
     lastUpdatedAt: Date.now(),
   },
   home: {
+    schemaVersion: 2,
+    updatedAt: 0,
     activeRoom: 'courtyard',
     wallColor: '#e9dcc8',
     floorMaterial: 'walnut',
@@ -367,25 +371,330 @@ interface UniverseStore extends UniversePersistedState {
   setEnvironmentSettings: (patch: Partial<EnvironmentSettings>) => void;
 }
 
-let persistTimer: number | null = null;
-function schedulePersist(getState: () => UniverseStore) {
-  if (typeof window === 'undefined') return;
-  if (persistTimer) window.clearTimeout(persistTimer);
-  persistTimer = window.setTimeout(() => {
-    const s = getState();
-    const persisted: UniversePersistedState = {
-      hasEntered: s.hasEntered,
-      starsCurrency: s.starsCurrency,
-      cat: s.cat,
-      home: s.home,
-      wishes: s.wishes,
-      greenhouse: s.greenhouse,
-      aquarium: s.aquarium,
-      audio: s.audio,
-      environment: s.environment,
+const VALID_ROOMS = new Set<RoomType>([
+  'courtyard',
+  'eyvan',
+  'hall',
+  'living',
+  'bedroom',
+  'library',
+  'kitchen',
+  'cat_room',
+  'bathroom',
+]);
+const VALID_FLOOR_MATERIALS = new Set<FloorMaterialId>(['oak', 'cream_tile', 'marble', 'walnut']);
+const VALID_SEASONS = new Set<SeasonType>(['spring', 'summer', 'autumn', 'winter']);
+const VALID_TIME_MODES = new Set<HomeTimeMode>(['day', 'sunset', 'night']);
+const VALID_SURFACES = new Set<SurfaceKind>(['floor', 'rug', 'table', 'wall', 'garden']);
+const VALID_PLANT_SPECIES = new Set<PlantSpecies>([
+  'dream_rose',
+  'moon_lavender',
+  'crystal_lotus',
+  'golden_sun',
+  'night_orchid',
+  'star_cactus',
+]);
+const VALID_POT_STYLES = new Set<PotStyle>([
+  'terracotta',
+  'rose_ceramic',
+  'gold_trimmed',
+  'mossy_stone',
+]);
+
+function sanitizePlacedFurnitureList(
+  rawItems: unknown,
+  fallbackItems: PlacedFurniture[]
+): PlacedFurniture[] {
+  if (!Array.isArray(rawItems)) {
+    return fallbackItems.map((item) => ({
+      ...item,
+      position: [...item.position] as [number, number, number],
+    }));
+  }
+
+  const seenUids = new Set<string>();
+  const sanitized: PlacedFurniture[] = [];
+
+  for (let i = 0; i < rawItems.length; i++) {
+    const entry = rawItems[i];
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const raw = entry as Partial<PlacedFurniture>;
+    if (typeof raw.kind !== 'string' || !(raw.kind in CATALOG_BY_KIND)) continue;
+    const kind = raw.kind as FurnitureKind;
+
+    const uid =
+      typeof raw.uid === 'string' && raw.uid.trim().length > 0
+        ? raw.uid.trim()
+        : `f-recovered-${i}-${kind}`;
+    if (seenUids.has(uid)) continue;
+    seenUids.add(uid);
+
+    const meta = getCatalogMeta(kind);
+    const room: RoomType =
+      typeof raw.room === 'string' && VALID_ROOMS.has(raw.room as RoomType)
+        ? (raw.room as RoomType)
+        : 'courtyard';
+
+    const rawPos = Array.isArray(raw.position) ? raw.position : [0, 0, 0];
+    const px = typeof rawPos[0] === 'number' && Number.isFinite(rawPos[0]) ? Math.max(-14.5, Math.min(14.5, rawPos[0])) : 0;
+    const py = typeof rawPos[1] === 'number' && Number.isFinite(rawPos[1]) ? Math.max(-0.5, Math.min(5.0, rawPos[1])) : 0;
+    const pz = typeof rawPos[2] === 'number' && Number.isFinite(rawPos[2]) ? Math.max(-16.5, Math.min(7.5, rawPos[2])) : 0;
+
+    const rotationY =
+      typeof raw.rotationY === 'number' && Number.isFinite(raw.rotationY) ? raw.rotationY : 0;
+    const color =
+      typeof raw.color === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(raw.color)
+        ? raw.color
+        : meta.defaultColor;
+    const rawScale =
+      typeof raw.scale === 'number' && Number.isFinite(raw.scale) ? raw.scale : meta.defaultScale;
+    const scale = clampScaleForKind(kind, rawScale);
+    const surface: SurfaceKind =
+      typeof raw.surface === 'string' && VALID_SURFACES.has(raw.surface as SurfaceKind)
+        ? (raw.surface as SurfaceKind)
+        : meta.surface;
+
+    sanitized.push({
+      uid,
+      kind,
+      room,
+      position: [px, py, pz],
+      rotationY,
+      color,
+      scale,
+      surface,
+      variantSeed:
+        typeof raw.variantSeed === 'number' && Number.isFinite(raw.variantSeed)
+          ? raw.variantSeed
+          : undefined,
+      plantSpecies:
+        typeof raw.plantSpecies === 'string' && VALID_PLANT_SPECIES.has(raw.plantSpecies as PlantSpecies)
+          ? (raw.plantSpecies as PlantSpecies)
+          : undefined,
+      potStyle:
+        typeof raw.potStyle === 'string' && VALID_POT_STYLES.has(raw.potStyle as PotStyle)
+          ? (raw.potStyle as PotStyle)
+          : undefined,
+      greenhouseSlotIndex:
+        typeof raw.greenhouseSlotIndex === 'number' && Number.isFinite(raw.greenhouseSlotIndex)
+          ? raw.greenhouseSlotIndex
+          : undefined,
+    });
+  }
+
+  return sanitized;
+}
+
+function sanitizeHomePresets(
+  rawPresets: unknown,
+  fallbackPresets: HomeDesignPreset[]
+): HomeDesignPreset[] {
+  if (!Array.isArray(rawPresets)) {
+    return fallbackPresets.map((p) => ({
+      ...p,
+      items: p.items.map((i) => ({ ...i, position: [...i.position] as [number, number, number] })),
+    }));
+  }
+
+  const seenIds = new Set<string>();
+  const cleaned: HomeDesignPreset[] = [];
+  for (let i = 0; i < rawPresets.length; i++) {
+    const p = rawPresets[i];
+    if (!p || typeof p !== 'object' || Array.isArray(p)) continue;
+    const raw = p as Partial<HomeDesignPreset>;
+    const id =
+      typeof raw.id === 'string' && raw.id.trim().length > 0
+        ? raw.id.trim()
+        : `preset-recovered-${i}`;
+    if (seenIds.has(id)) continue;
+    seenIds.add(id);
+
+    cleaned.push({
+      id,
+      name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : 'چیدمان ذخیره‌شده',
+      wallColor:
+        typeof raw.wallColor === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(raw.wallColor)
+          ? raw.wallColor
+          : DEFAULT_UNIVERSE_STATE.home.wallColor,
+      floorMaterial:
+        typeof raw.floorMaterial === 'string' && VALID_FLOOR_MATERIALS.has(raw.floorMaterial as FloorMaterialId)
+          ? (raw.floorMaterial as FloorMaterialId)
+          : DEFAULT_UNIVERSE_STATE.home.floorMaterial,
+      season:
+        typeof raw.season === 'string' && VALID_SEASONS.has(raw.season as SeasonType)
+          ? (raw.season as SeasonType)
+          : DEFAULT_UNIVERSE_STATE.home.season,
+      lightWarmth:
+        typeof raw.lightWarmth === 'number' && Number.isFinite(raw.lightWarmth)
+          ? Math.max(0, Math.min(1, raw.lightWarmth))
+          : DEFAULT_UNIVERSE_STATE.home.lightWarmth,
+      timeMode:
+        typeof raw.timeMode === 'string' && VALID_TIME_MODES.has(raw.timeMode as HomeTimeMode)
+          ? (raw.timeMode as HomeTimeMode)
+          : 'day',
+      items: sanitizePlacedFurnitureList(raw.items, DEFAULT_HOME_ITEMS),
+      savedAt: typeof raw.savedAt === 'number' && Number.isFinite(raw.savedAt) ? raw.savedAt : Date.now(),
+    });
+  }
+
+  return cleaned.length > 0 ? cleaned.slice(0, 8) : fallbackPresets;
+}
+
+function sanitizeHomeState(rawHome: unknown): { home: HomeState; repaired: boolean } {
+  if (!rawHome || typeof rawHome !== 'object' || Array.isArray(rawHome)) {
+    return {
+      home: { ...DEFAULT_UNIVERSE_STATE.home, updatedAt: Date.now() },
+      repaired: true,
     };
-    void saveUniverseState(persisted);
-  }, 220);
+  }
+
+  const saved = rawHome as Partial<HomeState>;
+  const needsMansionMigration = !saved.mansionMigrated;
+  const presets = sanitizeHomePresets(saved.savedPresets, DEFAULT_UNIVERSE_STATE.home.savedPresets);
+
+  if (needsMansionMigration) {
+    const migratedPresets = [
+      ...DEFAULT_UNIVERSE_STATE.home.savedPresets,
+      ...presets.filter(
+        (p) => p.id !== 'preset-cozy-default' && p.id !== 'preset-persian-mansion-default'
+      ),
+    ].slice(0, 8);
+    return {
+      home: {
+        ...DEFAULT_UNIVERSE_STATE.home,
+        savedPresets: migratedPresets,
+        mansionMigrated: true,
+        schemaVersion: 2,
+        updatedAt: Date.now(),
+      },
+      repaired: true,
+    };
+  }
+
+  const sanitizedItems = sanitizePlacedFurnitureList(saved.items, DEFAULT_HOME_ITEMS);
+  const itemsHadInvalidEntries =
+    !Array.isArray(saved.items) || sanitizedItems.length !== saved.items.length;
+
+  return {
+    home: {
+      schemaVersion: 2,
+      updatedAt:
+        typeof saved.updatedAt === 'number' && Number.isFinite(saved.updatedAt)
+          ? saved.updatedAt
+          : Date.now(),
+      activeRoom:
+        typeof saved.activeRoom === 'string' && VALID_ROOMS.has(saved.activeRoom as RoomType)
+          ? (saved.activeRoom as RoomType)
+          : DEFAULT_UNIVERSE_STATE.home.activeRoom,
+      wallColor:
+        typeof saved.wallColor === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(saved.wallColor)
+          ? saved.wallColor
+          : DEFAULT_UNIVERSE_STATE.home.wallColor,
+      floorMaterial:
+        typeof saved.floorMaterial === 'string' &&
+        VALID_FLOOR_MATERIALS.has(saved.floorMaterial as FloorMaterialId)
+          ? (saved.floorMaterial as FloorMaterialId)
+          : DEFAULT_UNIVERSE_STATE.home.floorMaterial,
+      season:
+        typeof saved.season === 'string' && VALID_SEASONS.has(saved.season as SeasonType)
+          ? (saved.season as SeasonType)
+          : DEFAULT_UNIVERSE_STATE.home.season,
+      lightWarmth:
+        typeof saved.lightWarmth === 'number' && Number.isFinite(saved.lightWarmth)
+          ? Math.max(0, Math.min(1, saved.lightWarmth))
+          : DEFAULT_UNIVERSE_STATE.home.lightWarmth,
+      timeMode:
+        typeof saved.timeMode === 'string' && VALID_TIME_MODES.has(saved.timeMode as HomeTimeMode)
+          ? (saved.timeMode as HomeTimeMode)
+          : 'day',
+      snapToGrid: typeof saved.snapToGrid === 'boolean' ? saved.snapToGrid : true,
+      mansionMigrated: true,
+      unlockedKinds: Array.from(
+        new Set([
+          ...(Array.isArray(saved.unlockedKinds) ? saved.unlockedKinds : []),
+          ...ALL_UNLOCKED_MANSION_KINDS,
+        ])
+      ),
+      items: sanitizedItems,
+      savedPresets: presets,
+      activePresetId:
+        typeof saved.activePresetId === 'string' || saved.activePresetId === null
+          ? saved.activePresetId
+          : DEFAULT_UNIVERSE_STATE.home.activePresetId,
+    },
+    repaired: itemsHadInvalidEntries || saved.schemaVersion !== 2,
+  };
+}
+
+function buildPersistedSnapshot(s: UniverseStore): UniversePersistedState {
+  const now = Date.now();
+  return {
+    schemaVersion: 2,
+    updatedAt: now,
+    hasEntered: s.hasEntered,
+    starsCurrency: s.starsCurrency,
+    cat: s.cat,
+    home: {
+      ...s.home,
+      schemaVersion: 2,
+      updatedAt: s.home.updatedAt ?? now,
+    },
+    wishes: s.wishes,
+    greenhouse: s.greenhouse,
+    aquarium: s.aquarium,
+    audio: s.audio,
+    environment: s.environment,
+  };
+}
+
+let persistTimer: number | null = null;
+let latestGetter: (() => UniverseStore) | null = null;
+let unloadHooksRegistered = false;
+
+function ensureUnloadFlushHooks() {
+  if (unloadHooksRegistered || typeof window === 'undefined') return;
+  unloadHooksRegistered = true;
+  const flushSync = () => {
+    if (!latestGetter) return;
+    if (persistTimer) {
+      window.clearTimeout(persistTimer);
+      persistTimer = null;
+    }
+    const snapshot = buildPersistedSnapshot(latestGetter());
+    saveUniverseStateSyncMirror(snapshot);
+    void saveUniverseState(snapshot);
+  };
+  window.addEventListener('pagehide', flushSync);
+  window.addEventListener('beforeunload', flushSync);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushSync();
+  });
+}
+
+function schedulePersist(getState: () => UniverseStore, immediate = false) {
+  if (typeof window === 'undefined') return;
+  latestGetter = getState;
+  ensureUnloadFlushHooks();
+
+  const snapshot = buildPersistedSnapshot(getState());
+  // Always keep synchronous mirror up-to-date so reloads within milliseconds never lose changes
+  saveUniverseStateSyncMirror(snapshot);
+
+  if (persistTimer) {
+    window.clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+
+  if (immediate) {
+    void saveUniverseState(snapshot);
+    return;
+  }
+
+  persistTimer = window.setTimeout(() => {
+    persistTimer = null;
+    const latest = buildPersistedSnapshot(getState());
+    void saveUniverseState(latest);
+  }, 160);
 }
 
 export const useUniverseStore = create<UniverseStore>((set, get) => ({
@@ -396,59 +705,58 @@ export const useUniverseStore = create<UniverseStore>((set, get) => ({
   homeUndoStack: [],
 
   hydrate: async () => {
+    latestGetter = get;
+    ensureUnloadFlushHooks();
     const saved = await loadUniverseState();
     if (saved) {
       const needsOrangeMigration = !saved.cat?.catOrangeMigrated;
-      const needsMansionMigration = !saved.home?.mansionMigrated;
-      const nextHome: HomeState = needsMansionMigration
-        ? {
-            ...DEFAULT_UNIVERSE_STATE.home,
-            savedPresets: [
-              ...DEFAULT_UNIVERSE_STATE.home.savedPresets,
-              ...(saved.home?.savedPresets ?? []).filter(
-                (p) => p.id !== 'preset-cozy-default' && p.id !== 'preset-persian-mansion-default'
-              ),
-            ].slice(0, 8),
-            mansionMigrated: true,
-          }
-        : {
-            ...DEFAULT_UNIVERSE_STATE.home,
-            ...saved.home,
-            mansionMigrated: true,
-            unlockedKinds: Array.from(
-              new Set([
-                ...(saved.home?.unlockedKinds ?? []),
-                ...ALL_UNLOCKED_MANSION_KINDS,
-              ])
-            ),
-          };
+      const { home: nextHome, repaired: homeRepaired } = sanitizeHomeState(saved.home);
       const rawQuality = saved.environment?.quality as string | undefined;
       const normalizedQuality = normalizeGraphicsQuality(rawQuality);
       const needsQualityMigration = rawQuality !== normalizedQuality;
       set({
         ...DEFAULT_UNIVERSE_STATE,
         ...saved,
+        hasEntered: typeof saved.hasEntered === 'boolean' ? saved.hasEntered : false,
+        starsCurrency:
+          typeof saved.starsCurrency === 'number' && Number.isFinite(saved.starsCurrency)
+            ? saved.starsCurrency
+            : DEFAULT_UNIVERSE_STATE.starsCurrency,
         cat: {
           ...DEFAULT_UNIVERSE_STATE.cat,
-          ...saved.cat,
+          ...(saved.cat && typeof saved.cat === 'object' ? saved.cat : {}),
           breed: needsOrangeMigration ? 'honey' : (saved.cat?.breed ?? 'honey'),
           catOrangeMigrated: true,
           affection: saved.cat?.affection ?? DEFAULT_UNIVERSE_STATE.cat.affection,
-          unlockedItems: saved.cat?.unlockedItems ?? DEFAULT_UNIVERSE_STATE.cat.unlockedItems,
+          unlockedItems: Array.isArray(saved.cat?.unlockedItems)
+            ? saved.cat.unlockedItems
+            : DEFAULT_UNIVERSE_STATE.cat.unlockedItems,
         },
         home: nextHome,
-        greenhouse: { ...DEFAULT_UNIVERSE_STATE.greenhouse, ...saved.greenhouse },
-        aquarium: { ...DEFAULT_UNIVERSE_STATE.aquarium, ...saved.aquarium },
-        audio: { ...DEFAULT_UNIVERSE_STATE.audio, ...saved.audio },
+        wishes: Array.isArray(saved.wishes) ? saved.wishes : DEFAULT_UNIVERSE_STATE.wishes,
+        greenhouse: {
+          ...DEFAULT_UNIVERSE_STATE.greenhouse,
+          ...(saved.greenhouse && typeof saved.greenhouse === 'object' ? saved.greenhouse : {}),
+        },
+        aquarium: {
+          ...DEFAULT_UNIVERSE_STATE.aquarium,
+          ...(saved.aquarium && typeof saved.aquarium === 'object' ? saved.aquarium : {}),
+        },
+        audio: {
+          ...DEFAULT_UNIVERSE_STATE.audio,
+          ...(saved.audio && typeof saved.audio === 'object' ? saved.audio : {}),
+        },
         environment: {
           ...DEFAULT_UNIVERSE_STATE.environment,
-          ...saved.environment,
+          ...(saved.environment && typeof saved.environment === 'object' ? saved.environment : {}),
           quality: normalizedQuality,
         },
         hydrated: true,
       });
       get().tickCatNeeds();
-      if (needsOrangeMigration || needsMansionMigration || needsQualityMigration) schedulePersist(get);
+      if (needsOrangeMigration || homeRepaired || needsQualityMigration) {
+        schedulePersist(get, true);
+      }
     } else {
       set({ hydrated: true });
     }
@@ -593,13 +901,13 @@ export const useUniverseStore = create<UniverseStore>((set, get) => ({
   },
 
   setActiveRoom: (room) => {
-    set((s) => ({ home: { ...s.home, activeRoom: room } }));
-    schedulePersist(get);
+    set((s) => ({ home: { ...s.home, activeRoom: room, updatedAt: Date.now() } }));
+    schedulePersist(get, true);
   },
 
   setHomeStyle: (patch) => {
-    set((s) => ({ home: { ...s.home, ...patch } }));
-    schedulePersist(get);
+    set((s) => ({ home: { ...s.home, ...patch, updatedAt: Date.now() } }));
+    schedulePersist(get, true);
   },
 
   pushHomeUndoSnapshot: () => {
@@ -619,10 +927,11 @@ export const useUniverseStore = create<UniverseStore>((set, get) => ({
       homeUndoStack: rest,
       home: {
         ...s.home,
-        items: prevItems.map((i) => ({ ...i })),
+        items: prevItems.map((i) => ({ ...i, position: [...i.position] as [number, number, number] })),
+        updatedAt: Date.now(),
       },
     });
-    schedulePersist(get);
+    schedulePersist(get, true);
     return true;
   },
 
@@ -645,9 +954,9 @@ export const useUniverseStore = create<UniverseStore>((set, get) => ({
     };
     get().pushHomeUndoSnapshot();
     set((s) => ({
-      home: { ...s.home, items: [...s.home.items, newItem] },
+      home: { ...s.home, items: [...s.home.items, newItem], updatedAt: Date.now() },
     }));
-    schedulePersist(get);
+    schedulePersist(get, true);
     return uid;
   },
 
@@ -658,6 +967,7 @@ export const useUniverseStore = create<UniverseStore>((set, get) => ({
     set((s) => ({
       home: {
         ...s.home,
+        updatedAt: Date.now(),
         items: s.home.items.map((item) => {
           if (item.uid !== uid) return item;
           const nextScale =
@@ -671,22 +981,24 @@ export const useUniverseStore = create<UniverseStore>((set, get) => ({
       },
     }));
     if (persist) {
-      schedulePersist(get);
+      schedulePersist(get, true);
     }
   },
 
   flushPersist: () => {
-    schedulePersist(get);
+    set((s) => ({ home: { ...s.home, updatedAt: Date.now() } }));
+    schedulePersist(get, true);
   },
 
   moveFurniture: (uid, position) => {
     set((s) => ({
       home: {
         ...s.home,
+        updatedAt: Date.now(),
         items: s.home.items.map((item) => (item.uid === uid ? { ...item, position } : item)),
       },
     }));
-    schedulePersist(get);
+    schedulePersist(get, false);
   },
 
   rotateFurniture: (uid, deltaRad = Math.PI / 6) => {
@@ -694,12 +1006,13 @@ export const useUniverseStore = create<UniverseStore>((set, get) => ({
     set((s) => ({
       home: {
         ...s.home,
+        updatedAt: Date.now(),
         items: s.home.items.map((item) =>
           item.uid === uid ? { ...item, rotationY: (item.rotationY + deltaRad) % (Math.PI * 2) } : item
         ),
       },
     }));
-    schedulePersist(get);
+    schedulePersist(get, true);
   },
 
   scaleFurniture: (uid, nextScale) => {
@@ -707,12 +1020,13 @@ export const useUniverseStore = create<UniverseStore>((set, get) => ({
     set((s) => ({
       home: {
         ...s.home,
+        updatedAt: Date.now(),
         items: s.home.items.map((item) =>
           item.uid === uid ? { ...item, scale: clampScaleForKind(item.kind, nextScale) } : item
         ),
       },
     }));
-    schedulePersist(get);
+    schedulePersist(get, true);
   },
 
   duplicateFurniture: (uid) => {
@@ -736,10 +1050,11 @@ export const useUniverseStore = create<UniverseStore>((set, get) => ({
     set({
       home: {
         ...s.home,
+        updatedAt: Date.now(),
         items: [...s.home.items, copy],
       },
     });
-    schedulePersist(get);
+    schedulePersist(get, true);
     return copyUid;
   },
 
@@ -748,10 +1063,11 @@ export const useUniverseStore = create<UniverseStore>((set, get) => ({
     set((s) => ({
       home: {
         ...s.home,
+        updatedAt: Date.now(),
         items: s.home.items.filter((item) => item.uid !== uid),
       },
     }));
-    schedulePersist(get);
+    schedulePersist(get, true);
   },
 
   resetHomeLayout: () => {
@@ -759,14 +1075,15 @@ export const useUniverseStore = create<UniverseStore>((set, get) => ({
     set((s) => ({
       home: {
         ...s.home,
+        updatedAt: Date.now(),
         wallColor: DEFAULT_UNIVERSE_STATE.home.wallColor,
         floorMaterial: DEFAULT_UNIVERSE_STATE.home.floorMaterial,
         season: DEFAULT_UNIVERSE_STATE.home.season,
         lightWarmth: DEFAULT_UNIVERSE_STATE.home.lightWarmth,
-        items: DEFAULT_HOME_ITEMS.map((i) => ({ ...i })),
+        items: DEFAULT_HOME_ITEMS.map((i) => ({ ...i, position: [...i.position] as [number, number, number] })),
       },
     }));
-    schedulePersist(get);
+    schedulePersist(get, true);
   },
 
   revertLastSavedHome: () => {
@@ -778,42 +1095,45 @@ export const useUniverseStore = create<UniverseStore>((set, get) => ({
     set({
       home: {
         ...s.home,
+        updatedAt: Date.now(),
         wallColor: target.wallColor,
         floorMaterial: target.floorMaterial,
         season: target.season,
         lightWarmth: target.lightWarmth,
         timeMode: (target.timeMode as HomeTimeMode | undefined) ?? s.home.timeMode ?? 'day',
-        items: target.items.map((i) => ({ ...i })),
+        items: target.items.map((i) => ({ ...i, position: [...i.position] as [number, number, number] })),
         activePresetId: target.id,
       },
     });
-    schedulePersist(get);
+    schedulePersist(get, true);
     return true;
   },
 
   saveHomePreset: (name) => {
     const trimmed = name.trim() || 'چیدمان دلخواه عمارت';
     set((s) => {
+      const now = Date.now();
       const preset: HomeDesignPreset = {
-        id: `preset-${Date.now()}`,
+        id: `preset-${now}`,
         name: trimmed,
         wallColor: s.home.wallColor,
         floorMaterial: s.home.floorMaterial,
         season: s.home.season,
         lightWarmth: s.home.lightWarmth,
         timeMode: s.home.timeMode ?? 'day',
-        items: s.home.items.map((i) => ({ ...i })),
-        savedAt: Date.now(),
+        items: s.home.items.map((i) => ({ ...i, position: [...i.position] as [number, number, number] })),
+        savedAt: now,
       };
       return {
         home: {
           ...s.home,
+          updatedAt: now,
           savedPresets: [preset, ...s.home.savedPresets].slice(0, 8),
           activePresetId: preset.id,
         },
       };
     });
-    schedulePersist(get);
+    schedulePersist(get, true);
   },
 
   loadHomePreset: (id) => {
@@ -824,17 +1144,18 @@ export const useUniverseStore = create<UniverseStore>((set, get) => ({
       return {
         home: {
           ...s.home,
+          updatedAt: Date.now(),
           wallColor: found.wallColor,
           floorMaterial: found.floorMaterial,
           season: found.season,
           lightWarmth: found.lightWarmth,
           timeMode: (found.timeMode as HomeTimeMode | undefined) ?? s.home.timeMode ?? 'day',
-          items: found.items.map((i) => ({ ...i })),
+          items: found.items.map((i) => ({ ...i, position: [...i.position] as [number, number, number] })),
           activePresetId: found.id,
         },
       };
     });
-    schedulePersist(get);
+    schedulePersist(get, true);
   },
 
   placeGreenhousePlantInHome: (slotIndex, room, position) => {
@@ -859,10 +1180,11 @@ export const useUniverseStore = create<UniverseStore>((set, get) => ({
       starsCurrency: s.starsCurrency - cost,
       home: {
         ...s.home,
+        updatedAt: Date.now(),
         unlockedKinds: [...s.home.unlockedKinds, kind],
       },
     });
-    schedulePersist(get);
+    schedulePersist(get, true);
     return true;
   },
 
