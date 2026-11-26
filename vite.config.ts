@@ -90,7 +90,7 @@ function devEntryHtmlPlugin(): Plugin {
         const pathname = rawUrl.split('?')[0];
         if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
           try {
-            const entryPath = path.resolve(rootDir, 'src/entry.html');
+            const entryPath = path.resolve(rootDir, 'entry.html');
             if (fs.existsSync(entryPath)) {
               const rawHtml = fs.readFileSync(entryPath, 'utf8');
               const transformed = await server.transformIndexHtml(rawUrl, rawHtml);
@@ -125,7 +125,7 @@ function githubPagesOutputPlugin(): Plugin {
         return;
       }
 
-      const builtEntry = path.resolve(outDir, 'src/entry.html');
+      const builtEntry = path.resolve(outDir, 'entry.html');
       const distIndex = path.resolve(outDir, 'index.html');
       if (fs.existsSync(builtEntry)) {
         fs.copyFileSync(builtEntry, distIndex);
@@ -164,7 +164,7 @@ function githubPagesOutputPlugin(): Plugin {
 
 export default defineConfig(({command}) => {
   return {
-    base: process.env.VITE_BASE_PATH || (command === 'build' ? '/jahane_zahra/' : '/'),
+    base: process.env.VITE_BASE_PATH || (command === 'build' ? './' : '/'),
     plugins: [
       react(),
       tailwindcss(),
@@ -174,7 +174,7 @@ export default defineConfig(({command}) => {
     ],
     build: {
       rollupOptions: {
-        input: path.resolve(__dirname, 'src/entry.html'),
+        input: path.resolve(__dirname, 'entry.html'),
         output: {
           manualChunks(id) {
             if (id.includes('node_modules/three')) return 'three-core';

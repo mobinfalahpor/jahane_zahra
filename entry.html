@@ -24,7 +24,12 @@
         var redirect = sessionStorage.getItem('olu_redirect');
         if (redirect) {
           sessionStorage.removeItem('olu_redirect');
-          history.replaceState(null, '', redirect);
+          try {
+            var target = new URL(redirect, location.origin);
+            if (target.search || target.hash) {
+              history.replaceState(null, '', location.pathname + target.search + target.hash);
+            }
+          } catch (e) {}
         }
       })();
     </script>

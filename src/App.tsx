@@ -45,6 +45,36 @@ function WorldLoadingFallback() {
   );
 }
 
+class UniverseErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="w-full h-full flex flex-col items-center justify-center bg-[#17172F] text-[#F1DCCB] p-6 text-center">
+          <p className="text-lg font-semibold mb-2">مشکلی در نمایش این بخش پیش آمد</p>
+          <p className="text-sm text-[#D9A9C5]/80 mb-5">لطفاً صفحه را یک بار تازه کنید.</p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="px-5 py-2.5 rounded-xl bg-[#D6B875] text-[#17172F] text-sm font-bold hover:brightness-105 transition-all cursor-pointer"
+          >
+            بارگذاری مجدد
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   const hydrated = useUniverseStore((s) => s.hydrated);
   const hasEntered = useUniverseStore((s) => s.hasEntered);
@@ -86,29 +116,39 @@ export default function App() {
   }, [hydrated, hasEntered]);
 
   if (!hydrated) {
-    return <WorldLoadingFallback />;
+    return (
+      <UniverseErrorBoundary>
+        <WorldLoadingFallback />
+      </UniverseErrorBoundary>
+    );
   }
 
   if (!hasEntered) {
-    return <EntryGate onSuccessEnter={() => setHasEntered(true)} />;
+    return (
+      <UniverseErrorBoundary>
+        <EntryGate onSuccessEnter={() => setHasEntered(true)} />
+      </UniverseErrorBoundary>
+    );
   }
 
   return (
-    <main className="relative w-full h-full overflow-hidden bg-[#17172F]">
-      <WorldHUD />
+    <UniverseErrorBoundary>
+      <main className="relative w-full h-full overflow-hidden bg-[#17172F]">
+        <WorldHUD />
 
-      <Suspense fallback={<WorldLoadingFallback />}>
-        {activeWorld === 'island' && <FloatingIslandScene />}
-        {activeWorld === 'museum' && <MuseumWorld />}
-        {activeWorld === 'music' && <MusicRoomWorld />}
-        {activeWorld === 'cat' && <CatGameWorld />}
-        {activeWorld === 'home' && <HomeDesignerWorld />}
-        {activeWorld === 'wishes' && <WishSkyWorld />}
-        {activeWorld === 'greenhouse' && <GreenhouseWorld />}
-        {activeWorld === 'cafe' && <CloudCafeWorld />}
-        {activeWorld === 'aquarium' && <AquariumWorld />}
-        {activeWorld === 'observatory' && <ObservatoryWorld />}
-      </Suspense>
-    </main>
+        <Suspense fallback={<WorldLoadingFallback />}>
+          {activeWorld === 'island' && <FloatingIslandScene />}
+          {activeWorld === 'museum' && <MuseumWorld />}
+          {activeWorld === 'music' && <MusicRoomWorld />}
+          {activeWorld === 'cat' && <CatGameWorld />}
+          {activeWorld === 'home' && <HomeDesignerWorld />}
+          {activeWorld === 'wishes' && <WishSkyWorld />}
+          {activeWorld === 'greenhouse' && <GreenhouseWorld />}
+          {activeWorld === 'cafe' && <CloudCafeWorld />}
+          {activeWorld === 'aquarium' && <AquariumWorld />}
+          {activeWorld === 'observatory' && <ObservatoryWorld />}
+        </Suspense>
+      </main>
+    </UniverseErrorBoundary>
   );
 }
