@@ -1,4 +1,9 @@
-import { MUSIC_TRACKS_CONFIG, type MusicTrackConfig } from '../config/musicConfig';
+import {
+  MUSIC_TRACKS_CONFIG,
+  buildMusicTracksFromManifest,
+  type DiscoveredAudioManifestTrack,
+  type MusicTrackConfig,
+} from '../config/musicConfig';
 
 export interface MusicTrack extends MusicTrackConfig {
   srcUrl: string;
@@ -16,11 +21,20 @@ export interface PlayerSnapshot {
   ambient: 'none' | 'rain' | 'cafe' | 'night';
 }
 
+function encodeRelativePath(relPath: string): string {
+  return relPath
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+}
+
 function withBaseUrl(relPath: string): string {
+  if (!relPath) return '';
+  if (/^(?:https?:|blob:|data:)/i.test(relPath)) return relPath;
   const base = import.meta.env.BASE_URL || './';
   const cleanBase = base.endsWith('/') ? base : `${base}/`;
-  const cleanPath = relPath.startsWith('/') ? relPath.slice(1) : relPath;
-  return `${cleanBase}${cleanPath}`;
+  return `${cleanBase}${encodeRelativePath(relPath)}`;
 }
 
 class CozyAudioEngine {
@@ -31,7 +45,9 @@ class CozyAudioEngine {
 
   private audioEl: HTMLAudioElement | null = null;
   private audioElSource: MediaElementAudioSourceNode | null = null;
+  private audioElAbort: AbortController | null = null;
 
+  private libraryTracks: MusicTrackConfig[] = MUSIC_TRACKS_CONFIG;
   private customTracks: MusicTrack[] = [];
   private listeners = new Set<(snap: PlayerSnapshot) => void>();
 
@@ -41,6 +57,7 @@ class CozyAudioEngine {
   private currentTime = 0;
   private duration = 0;
   private errorMessage: string | null = null;
+  private playRequestSeq = 0;
 
   private ambientNode: AudioBufferSourceNode | null = null;
   private ambientGain: GainNode | null = null;
@@ -50,6 +67,19 @@ class CozyAudioEngine {
   private muted = false;
 
   private unlockBound = false;
+
+  refreshLibraryFromManifest(discovered: DiscoveredAudioManifestTrack[]) {
+    this.refreshLibraryFromConfig(buildMusicTracksFromManifest(discovered));
+  }
+
+  refreshLibraryFromConfig(nextConfig: MusicTrackConfig[]) {
+    this.libraryTracks = nextConfig;
+    const all = this.getAllTracks();
+    if (!all.some((t) => t.id === this.currentTrackId)) {
+      this.currentTrackId = all[0]?.id ?? '';
+    }
+    this.emit();
+  }
 
   unlockOnFirstGesture() {
     if (typeof window === 'undefined' || this.unlockBound) return;
@@ -94,46 +124,114 @@ class CozyAudioEngine {
       const el = new Audio();
       el.preload = 'metadata';
       el.crossOrigin = 'anonymous';
-      el.volume = this.muted ? 0 : this.volume;
+      el.muted = this.muted;
+      el.volume = 1;
 
-      el.addEventListener('timeupdate', () => {
-        this.currentTime = el.currentTime || 0;
-        this.duration = Number.isFinite(el.duration) ? el.duration : 0;
-        this.emit();
-      });
+      this.audioElAbort?.abort();
+      const ac = new AbortController();
+      this.audioElAbort = ac;
+      const sig = ac.signal;
 
-      el.addEventListener('loadedmetadata', () => {
-        this.duration = Number.isFinite(el.duration) ? el.duration : 0;
-        this.isLoading = false;
-        this.emit();
-      });
+      el.addEventListener(
+        'timeupdate',
+        () => {
+          this.currentTime = Number.isFinite(el.currentTime) ? el.currentTime : 0;
+          if (Number.isFinite(el.duration) && el.duration > 0) {
+            this.duration = el.duration;
+          }
+          this.emit();
+        },
+        { signal: sig },
+      );
 
-      el.addEventListener('playing', () => {
-        this.isPlaying = true;
-        this.isLoading = false;
-        this.errorMessage = null;
-        this.emit();
-      });
+      el.addEventListener(
+        'loadedmetadata',
+        () => {
+          this.duration = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 0;
+          this.isLoading = false;
+          this.emit();
+        },
+        { signal: sig },
+      );
 
-      el.addEventListener('pause', () => {
-        this.isPlaying = false;
-        this.emit();
-      });
+      el.addEventListener(
+        'durationchange',
+        () => {
+          if (Number.isFinite(el.duration) && el.duration > 0) {
+            this.duration = el.duration;
+            this.emit();
+          }
+        },
+        { signal: sig },
+      );
 
-      el.addEventListener('ended', () => {
-        this.isPlaying = false;
-        this.nextTrack(true);
-      });
+      el.addEventListener(
+        'waiting',
+        () => {
+          if (!el.getAttribute('src')) return;
+          this.isLoading = true;
+          this.isPlaying = false;
+          this.emit();
+        },
+        { signal: sig },
+      );
 
-      el.addEventListener('error', () => {
-        const track = this.getAllTracks().find((t) => t.id === this.currentTrackId);
-        this.isPlaying = false;
-        this.isLoading = false;
-        this.errorMessage = track
-          ? `فایل صوتی «${track.filename}» در پوشه public/audio/ پیدا نشد یا قابل پخش نیست.`
-          : 'فایل صوتی پیدا نشد یا قابل پخش نیست.';
-        this.emit();
-      });
+      el.addEventListener(
+        'canplay',
+        () => {
+          this.isLoading = false;
+          this.emit();
+        },
+        { signal: sig },
+      );
+
+      el.addEventListener(
+        'playing',
+        () => {
+          this.isPlaying = !el.paused && !el.ended;
+          this.isLoading = false;
+          this.errorMessage = null;
+          this.emit();
+        },
+        { signal: sig },
+      );
+
+      el.addEventListener(
+        'pause',
+        () => {
+          this.isPlaying = false;
+          this.isLoading = false;
+          this.emit();
+        },
+        { signal: sig },
+      );
+
+      el.addEventListener(
+        'ended',
+        () => {
+          this.isPlaying = false;
+          this.isLoading = false;
+          this.currentTime = 0;
+          this.emit();
+          this.nextTrack(true);
+        },
+        { signal: sig },
+      );
+
+      el.addEventListener(
+        'error',
+        () => {
+          if (!el.getAttribute('src')) return;
+          const track = this.getAllTracks().find((t) => t.id === this.currentTrackId);
+          this.isPlaying = false;
+          this.isLoading = false;
+          this.errorMessage = track
+            ? `فایل صوتی «${track.filename}» در پوشه public/audio/ پیدا نشد یا قابل پخش نیست.`
+            : 'فایل صوتی پیدا نشد یا قابل پخش نیست.';
+          this.emit();
+        },
+        { signal: sig },
+      );
 
       this.audioEl = el;
     }
@@ -144,7 +242,7 @@ class CozyAudioEngine {
         this.audioElSource = ctx.createMediaElementSource(this.audioEl);
         this.audioElSource.connect(this.masterGain);
       } catch {
-        // Ignore if already connected
+        // Ignore if already connected or unsupported
       }
     }
     return this.audioEl;
@@ -157,7 +255,7 @@ class CozyAudioEngine {
     }
     if (this.audioEl) {
       this.audioEl.muted = this.muted;
-      this.audioEl.volume = this.muted ? 0 : this.volume;
+      this.audioEl.volume = this.audioElSource ? 1 : this.muted ? 0 : this.volume;
     }
   }
 
@@ -187,14 +285,22 @@ class CozyAudioEngine {
   }
 
   getAllTracks(): MusicTrack[] {
-    const configured: MusicTrack[] = MUSIC_TRACKS_CONFIG.map((cfg) => ({
+    const configured: MusicTrack[] = this.libraryTracks.map((cfg) => ({
       ...cfg,
       srcUrl: withBaseUrl(`audio/${cfg.filename}`),
-      coverUrl: cfg.cover.startsWith('blob:') || cfg.cover.startsWith('data:')
-        ? cfg.cover
-        : withBaseUrl(cfg.cover),
+      coverUrl: cfg.cover ? withBaseUrl(cfg.cover) : withBaseUrl('audio/covers/rainy-night.jpg'),
     }));
     return [...configured, ...this.customTracks];
+  }
+
+  setInitialTrack(trackId: string) {
+    if (this.isPlaying || this.audioEl?.getAttribute('src')) return;
+    const tracks = this.getAllTracks();
+    const found = tracks.find((t) => t.id === trackId);
+    if (found && this.currentTrackId !== found.id) {
+      this.currentTrackId = found.id;
+      this.emit();
+    }
   }
 
   setVolume(vol: number) {
@@ -209,12 +315,14 @@ class CozyAudioEngine {
 
   addCustomAudioFile(file: File): MusicTrack {
     const url = URL.createObjectURL(file);
+    const ext = file.name.split('.').pop()?.toLowerCase() || 'audio';
     const track: MusicTrack = {
       id: `custom-${Date.now()}`,
       filename: file.name,
       title: file.name.replace(/\.[^/.]+$/, ''),
       artist: 'فایل انتخاب‌شده',
-      cover: withBaseUrl('audio/covers/rainy-night.jpg'),
+      cover: 'audio/covers/rainy-night.jpg',
+      format: ext,
       accentColor: '#D9A9C5',
       srcUrl: url,
       coverUrl: withBaseUrl('audio/covers/rainy-night.jpg'),
@@ -229,16 +337,18 @@ class CozyAudioEngine {
     const tracks = this.getAllTracks();
     const found = tracks.find((t) => t.id === trackId);
     if (!found) return;
+    ++this.playRequestSeq;
     this.currentTrackId = found.id;
     this.errorMessage = null;
     this.currentTime = 0;
     this.duration = 0;
+    this.isPlaying = false;
+    this.isLoading = false;
     if (this.audioEl) {
       this.audioEl.pause();
       this.audioEl.src = found.srcUrl;
       this.audioEl.load();
     }
-    this.isPlaying = false;
     this.emit();
   }
 
@@ -247,7 +357,7 @@ class CozyAudioEngine {
     const targetId = trackId || this.currentTrackId || tracks[0]?.id;
     const track = tracks.find((t) => t.id === targetId) || tracks[0];
     if (!track) {
-      this.errorMessage = 'هیچ آهنگی در فهرست موسیقی تعریف نشده است.';
+      this.errorMessage = 'هیچ آهنگی در فهرست موسیقی پیدا نشد.';
       this.emit();
       return;
     }
@@ -255,39 +365,58 @@ class CozyAudioEngine {
     const el = this.ensureAudioElement();
     if (!el) return;
 
+    const reqId = ++this.playRequestSeq;
     this.errorMessage = null;
-    const changingTrack = this.currentTrackId !== track.id || el.src === '';
+    const hasSrc = Boolean(el.getAttribute('src'));
+    const changingTrack = this.currentTrackId !== track.id || !hasSrc || el.error !== null;
     this.currentTrackId = track.id;
 
     if (changingTrack) {
+      el.pause();
+      this.isPlaying = false;
       this.isLoading = true;
       this.currentTime = 0;
       this.duration = 0;
       el.src = track.srcUrl;
       el.load();
+    } else if (el.ended) {
+      el.currentTime = 0;
+      this.currentTime = 0;
     }
     this.emit();
 
     try {
       await el.play();
-      this.isPlaying = true;
+      if (reqId !== this.playRequestSeq) return;
+      this.isPlaying = !el.paused && !el.ended;
       this.isLoading = false;
       this.emit();
-    } catch {
+    } catch (err) {
+      if (reqId !== this.playRequestSeq) return;
+      const errName = (err as { name?: string })?.name;
       this.isPlaying = false;
       this.isLoading = false;
+      if (errName === 'AbortError') {
+        this.emit();
+        return;
+      }
       if (!this.errorMessage) {
-        this.errorMessage = `فایل صوتی «${track.filename}» در پوشه public/audio/ پیدا نشد یا مرورگر اجازه پخش نداد.`;
+        this.errorMessage =
+          errName === 'NotAllowedError'
+            ? 'برای شروع پخش، دکمه پخش را لمس کنید.'
+            : `فایل صوتی «${track.filename}» در پوشه public/audio/ پیدا نشد یا قابل پخش نیست.`;
       }
       this.emit();
     }
   }
 
   pause() {
+    ++this.playRequestSeq;
     if (this.audioEl) {
       this.audioEl.pause();
     }
     this.isPlaying = false;
+    this.isLoading = false;
     this.emit();
   }
 
@@ -301,8 +430,14 @@ class CozyAudioEngine {
 
   seek(seconds: number) {
     if (!this.audioEl || !Number.isFinite(seconds)) return;
-    this.audioEl.currentTime = Math.max(0, Math.min(this.duration || seconds, seconds));
-    this.currentTime = this.audioEl.currentTime;
+    const maxDur =
+      Number.isFinite(this.audioEl.duration) && this.audioEl.duration > 0
+        ? this.audioEl.duration
+        : this.duration;
+    if (!Number.isFinite(maxDur) || maxDur <= 0) return;
+    const clamped = Math.max(0, Math.min(maxDur, seconds));
+    this.audioEl.currentTime = clamped;
+    this.currentTime = clamped;
     this.emit();
   }
 
@@ -324,6 +459,24 @@ class CozyAudioEngine {
     const idx = tracks.findIndex((t) => t.id === this.currentTrackId);
     const prev = tracks[(idx - 1 + tracks.length) % tracks.length];
     void this.playTrack(prev.id);
+  }
+
+  leaveMusicRoom() {
+    ++this.playRequestSeq;
+    if (this.audioEl) {
+      this.audioEl.pause();
+      this.audioEl.removeAttribute('src');
+      this.audioEl.load();
+    }
+    if (this.currentAmbient === 'rain' || this.currentAmbient === 'night') {
+      this.setAmbient('none');
+    }
+    this.isPlaying = false;
+    this.isLoading = false;
+    this.currentTime = 0;
+    this.duration = 0;
+    this.errorMessage = null;
+    this.emit();
   }
 
   getPlayingState() {
@@ -559,3 +712,11 @@ class CozyAudioEngine {
 }
 
 export const audioEngine = new CozyAudioEngine();
+
+if (import.meta.hot) {
+  import.meta.hot.accept('../config/musicConfig', (nextMod) => {
+    if (nextMod && Array.isArray(nextMod.MUSIC_TRACKS_CONFIG)) {
+      audioEngine.refreshLibraryFromConfig(nextMod.MUSIC_TRACKS_CONFIG);
+    }
+  });
+}

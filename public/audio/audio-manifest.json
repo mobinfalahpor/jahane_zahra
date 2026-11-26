@@ -1,0 +1,67 @@
+{
+  "tracks": [
+    {
+      "id": "4-5985478187621023846",
+      "filename": "4_5985478187621023846.mp3",
+      "url": "audio/4_5985478187621023846.mp3",
+      "title": "زندگی با تو چقدر قشنگه",
+      "artist": "معین",
+      "cover": "audio/covers/rainy-night.jpg",
+      "format": "mp3"
+    },
+    {
+      "id": "7-band-vasat-mimiram",
+      "filename": "7 Band Vasat Mimiram.mp3",
+      "url": "audio/7%20Band%20Vasat%20Mimiram.mp3",
+      "title": "Vasat Mimiram",
+      "artist": "7 Band",
+      "cover": "audio/covers/rainy-night.jpg",
+      "format": "mp3"
+    },
+    {
+      "id": "08-mano-bebakhsh",
+      "filename": "08-Mano Bebakhsh.mp3",
+      "url": "audio/08-Mano%20Bebakhsh.mp3",
+      "title": "میخوام که باتو باشم",
+      "artist": "منصور",
+      "cover": "audio/covers/rainy-night.jpg",
+      "format": "mp3"
+    },
+    {
+      "id": "aref-to-age-ba-man-bashi-128",
+      "filename": "aref_to_age_ba_man_bashi_128.mp3",
+      "url": "audio/aref_to_age_ba_man_bashi_128.mp3",
+      "title": "تو اگه با من باشی",
+      "artist": "عارف",
+      "cover": "audio/covers/rainy-night.jpg",
+      "format": "mp3"
+    },
+    {
+      "id": "moonlight-waltz",
+      "filename": "moonlight-waltz.wav",
+      "url": "audio/moonlight-waltz.wav",
+      "title": "moonlight-waltz",
+      "artist": "",
+      "cover": "audio/covers/rainy-night.jpg",
+      "format": "wav"
+    },
+    {
+      "id": "rainy-night-dream",
+      "filename": "rainy-night-dream.wav",
+      "url": "audio/rainy-night-dream.wav",
+      "title": "rainy-night-dream",
+      "artist": "",
+      "cover": "audio/covers/rainy-night.jpg",
+      "format": "wav"
+    },
+    {
+      "id": "test-discovery-song",
+      "filename": "Test Discovery Song.wav",
+      "url": "audio/Test%20Discovery%20Song.wav",
+      "title": "Test Discovery Song",
+      "artist": "",
+      "cover": "audio/covers/rainy-night.jpg",
+      "format": "wav"
+    }
+  ]
+}

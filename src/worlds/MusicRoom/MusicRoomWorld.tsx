@@ -677,10 +677,17 @@ export const MusicRoomWorld: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    if (activeTrackId) {
+      audioEngine.setInitialTrack(activeTrackId);
+    }
     const unsub = audioEngine.subscribe((snap) => {
       setPlayerSnap(snap);
+      setTracks(audioEngine.getAllTracks());
     });
-    return unsub;
+    return () => {
+      unsub();
+      audioEngine.leaveMusicRoom();
+    };
   }, []);
 
   useEffect(() => {
@@ -721,7 +728,6 @@ export const MusicRoomWorld: React.FC = () => {
   };
 
   const progressMax = Math.max(playerSnap.duration, 0.01);
-  const remainingTime = Math.max(0, playerSnap.duration - playerSnap.currentTime);
 
   return (
     <div className="relative w-full h-full select-none">
@@ -736,11 +742,11 @@ export const MusicRoomWorld: React.FC = () => {
         <VictorianRoomScene isPlaying={playerSnap.isPlaying} mood={mood} />
       </SceneCanvas>
 
-      {/* Hidden File Input (MP3 / WAV / OGG) */}
+      {/* Hidden File Input (MP3 / WAV / OGG / M4A / AAC / FLAC / OPUS) */}
       <input
         ref={fileInputRef}
         type="file"
-        accept=".mp3,.wav,.ogg,audio/*"
+        accept=".mp3,.wav,.ogg,.m4a,.aac,.flac,.opus,.webm,audio/*"
         onChange={handleFileUpload}
         className="hidden"
       />
@@ -917,7 +923,7 @@ export const MusicRoomWorld: React.FC = () => {
                 aria-label="پیشرفت آهنگ"
               />
               <span className="text-[10px] text-[#d4af63]/85 tabular-nums w-10 text-center">
-                {playerSnap.duration > 0 ? `-${formatTimeFa(remainingTime)}` : toPersianDigits('00:00')}
+                {formatTimeFa(playerSnap.duration)}
               </span>
             </div>
 
